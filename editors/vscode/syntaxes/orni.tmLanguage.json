@@ -58,7 +58,7 @@
       "patterns": [
         {
           "name": "support.type.orni",
-          "match": "\\b(?:string|int|double|bool|char|unit)\\b"
+          "match": "\\b(?:string|int(?:8|16|32|64)?|uint(?:8|16|32|64)|double|bool|char|unit)\\b"
         }
       ]
     },

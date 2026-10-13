@@ -2,6 +2,10 @@
 
 let language = "Orni";
 let answer = 6 * 7;
+let anotherAnswer = answer + 2;
+let differentAnswer = answer + "2";
 
 print language;
 print answer;
+print anotherAnswer;
+print differentAnswer;

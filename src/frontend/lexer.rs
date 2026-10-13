@@ -1,6 +1,6 @@
 use crate::{
-    error::OrniError,
-    token::{Token, TokenKind},
+    diagnostics::OrniError,
+    syntax::{Token, TokenKind},
 };
 
 /// Converts Orni source characters into a stream of [`Token`] values.
@@ -260,7 +260,7 @@ fn is_identifier_continue(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Lexer;
-    use crate::token::TokenKind;
+    use crate::syntax::TokenKind;
 
     #[test]
     fn recognizes_keywords_literals_and_comments() {

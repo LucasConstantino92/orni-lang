@@ -37,8 +37,8 @@ pub(crate) enum TokenKind {
     False,
     /// A user-defined name.
     Identifier(String),
-    /// A signed 64-bit integer literal.
-    Int(i64),
+    /// An integer literal stored losslessly until its target type is known.
+    Int(i128),
     /// A double-precision floating-point literal.
     Double(f64),
     /// A UTF-8 string literal without its surrounding quotes.

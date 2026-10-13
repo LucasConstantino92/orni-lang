@@ -1,0 +1,127 @@
+use crate::{
+    diagnostics::OrniError,
+    syntax::{Expression, Token, TokenKind, TypeName},
+};
+
+use super::{TypeChecker, identifier_name, is_numeric, numeric_result, semantic_error};
+
+impl TypeChecker {
+    /// Infers and validates the type produced by an expression.
+    pub(super) fn expression_type(
+        &mut self,
+        expression: &Expression,
+    ) -> Result<TypeName, OrniError> {
+        match expression {
+            Expression::Literal(value) => Ok(value.type_name()),
+            Expression::Grouping(expression) => self.expression_type(expression),
+            Expression::Variable(token) => self.lookup_variable(token),
+            Expression::Unary { operator, right } => {
+                let actual = self.expression_type(right)?;
+                match operator.kind {
+                    TokenKind::Minus => {
+                        self.require_numeric(operator, actual, "unary operand")?;
+                        Ok(actual)
+                    }
+                    TokenKind::Bang => {
+                        self.require_type(operator, TypeName::Bool, actual, "unary operand")?;
+                        Ok(TypeName::Bool)
+                    }
+                    _ => unreachable!("unary operators are validated by the parser"),
+                }
+            }
+            Expression::Binary {
+                left,
+                operator,
+                right,
+            } => self.binary_type(left, operator, right),
+            Expression::Call {
+                callee,
+                closing_parenthesis,
+                arguments,
+            } => self.call_type(callee, closing_parenthesis, arguments),
+        }
+    }
+
+    /// Validates a binary operation and returns its resulting type.
+    fn binary_type(
+        &mut self,
+        left: &Expression,
+        operator: &Token,
+        right: &Expression,
+    ) -> Result<TypeName, OrniError> {
+        let left_type = self.expression_type(left)?;
+        let right_type = self.expression_type(right)?;
+        match operator.kind {
+            TokenKind::Plus if left_type == TypeName::String || right_type == TypeName::String => {
+                Ok(TypeName::String)
+            }
+            TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash => {
+                self.require_numeric(operator, left_type, "left operand")?;
+                self.require_numeric(operator, right_type, "right operand")?;
+                Ok(numeric_result(left_type, right_type))
+            }
+            TokenKind::Greater
+            | TokenKind::GreaterEqual
+            | TokenKind::Less
+            | TokenKind::LessEqual => {
+                self.require_numeric(operator, left_type, "left operand")?;
+                self.require_numeric(operator, right_type, "right operand")?;
+                Ok(TypeName::Bool)
+            }
+            TokenKind::EqualEqual | TokenKind::BangEqual => {
+                if !(is_numeric(left_type) && is_numeric(right_type)) {
+                    self.require_type(operator, left_type, right_type, "right operand")?;
+                }
+                Ok(TypeName::Bool)
+            }
+            _ => unreachable!("binary operators are validated by the parser"),
+        }
+    }
+
+    /// Validates the target, arity, and argument types of a function call.
+    fn call_type(
+        &mut self,
+        callee: &Expression,
+        closing_parenthesis: &Token,
+        arguments: &[Expression],
+    ) -> Result<TypeName, OrniError> {
+        let Expression::Variable(name_token) = callee else {
+            return Err(semantic_error(
+                closing_parenthesis,
+                "only named functions can be called",
+            ));
+        };
+        let name = identifier_name(name_token);
+        let signature =
+            self.functions.get(name).cloned().ok_or_else(|| {
+                semantic_error(name_token, &format!("undefined function '{name}'"))
+            })?;
+        let required = signature
+            .parameters
+            .iter()
+            .filter(|(_, optional)| !optional)
+            .count();
+        if arguments.len() < required || arguments.len() > signature.parameters.len() {
+            let expected = if required == signature.parameters.len() {
+                format!("{} argument(s)", signature.parameters.len())
+            } else {
+                format!(
+                    "between {required} and {} argument(s)",
+                    signature.parameters.len()
+                )
+            };
+            return Err(semantic_error(
+                closing_parenthesis,
+                &format!(
+                    "function '{name}' expects {expected}, but received {}",
+                    arguments.len()
+                ),
+            ));
+        }
+        for (argument, (expected, _)) in arguments.iter().zip(&signature.parameters) {
+            let actual = self.expression_type(argument)?;
+            self.require_type(closing_parenthesis, *expected, actual, "function argument")?;
+        }
+        Ok(signature.return_type)
+    }
+}

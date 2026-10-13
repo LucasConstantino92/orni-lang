@@ -24,7 +24,7 @@ npx @vscode/vsce package --allow-missing-repository
 Install the generated VSIX:
 
 ```sh
-code --install-extension orni-language-0.4.0.vsix
+code --install-extension orni-language-0.5.0.vsix
 ```
 
 Alternatively, use **Extensions: Install from VSIX...** from the Command

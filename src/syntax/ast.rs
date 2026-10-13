@@ -1,10 +1,62 @@
-use crate::token::Token;
+use super::Token;
+
+/// The storage range selected for an integer value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntegerType {
+    /// An 8-bit signed integer.
+    Int8,
+    /// A 16-bit signed integer.
+    Int16,
+    /// A 32-bit signed integer.
+    Int32,
+    /// A 64-bit signed integer, also spelled `int`.
+    Int64,
+    /// An 8-bit unsigned integer.
+    UInt8,
+    /// A 16-bit unsigned integer.
+    UInt16,
+    /// A 32-bit unsigned integer.
+    UInt32,
+    /// A 64-bit unsigned integer.
+    UInt64,
+}
+
+impl IntegerType {
+    /// Returns whether a value fits within this integer type.
+    pub fn contains(self, value: i128) -> bool {
+        match self {
+            Self::Int8 => (i8::MIN as i128..=i8::MAX as i128).contains(&value),
+            Self::Int16 => (i16::MIN as i128..=i16::MAX as i128).contains(&value),
+            Self::Int32 => (i32::MIN as i128..=i32::MAX as i128).contains(&value),
+            Self::Int64 => (i64::MIN as i128..=i64::MAX as i128).contains(&value),
+            Self::UInt8 => (0..=u8::MAX as i128).contains(&value),
+            Self::UInt16 => (0..=u16::MAX as i128).contains(&value),
+            Self::UInt32 => (0..=u32::MAX as i128).contains(&value),
+            Self::UInt64 => (0..=u64::MAX as i128).contains(&value),
+        }
+    }
+}
+
+impl std::fmt::Display for IntegerType {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int8 => write!(formatter, "int8"),
+            Self::Int16 => write!(formatter, "int16"),
+            Self::Int32 => write!(formatter, "int32"),
+            Self::Int64 => write!(formatter, "int"),
+            Self::UInt8 => write!(formatter, "uint8"),
+            Self::UInt16 => write!(formatter, "uint16"),
+            Self::UInt32 => write!(formatter, "uint32"),
+            Self::UInt64 => write!(formatter, "uint64"),
+        }
+    }
+}
 
 /// A built-in type understood by Orni's semantic analyzer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeName {
-    /// A signed 64-bit integer.
-    Int,
+    /// An integer with an explicit storage range.
+    Integer(IntegerType),
     /// A double-precision floating-point number.
     Double,
     /// A UTF-8 string.
@@ -20,7 +72,7 @@ pub(crate) enum TypeName {
 impl std::fmt::Display for TypeName {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Int => write!(formatter, "int"),
+            Self::Integer(integer_type) => write!(formatter, "{integer_type}"),
             Self::Double => write!(formatter, "double"),
             Self::String => write!(formatter, "string"),
             Self::Bool => write!(formatter, "bool"),
@@ -131,8 +183,13 @@ pub(crate) enum Expression {
 /// A runtime value understood by the current Orni interpreter.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Value {
-    /// A signed 64-bit integer.
-    Int(i64),
+    /// An integer tagged with its selected storage range.
+    Integer {
+        /// The mathematical integer value.
+        value: i128,
+        /// The range enforced by arithmetic and conversions.
+        integer_type: IntegerType,
+    },
     /// A double-precision floating-point number.
     Double(f64),
     /// A UTF-8 string.
@@ -148,7 +205,7 @@ pub(crate) enum Value {
 impl std::fmt::Display for Value {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Int(number) => write!(formatter, "{number}"),
+            Self::Integer { value, .. } => write!(formatter, "{value}"),
             Self::Double(number) => write!(formatter, "{number}"),
             Self::String(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
@@ -162,7 +219,7 @@ impl Value {
     /// Returns the built-in Orni type represented by this runtime value.
     pub fn type_name(&self) -> TypeName {
         match self {
-            Self::Int(_) => TypeName::Int,
+            Self::Integer { integer_type, .. } => TypeName::Integer(*integer_type),
             Self::Double(_) => TypeName::Double,
             Self::String(_) => TypeName::String,
             Self::Bool(_) => TypeName::Bool,

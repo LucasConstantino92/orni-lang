@@ -23,17 +23,18 @@ its syntax, and execute it. The language currently supports:
 
 The primitive types use lowercase names and have explicit runtime behavior:
 
-- `int` is a signed 64-bit integer with checked arithmetic;
+- `int` and `int64` are signed 64-bit integers with checked arithmetic;
+- `int8`, `int16`, and `int32` provide smaller signed ranges;
+- `uint8`, `uint16`, `uint32`, and `uint64` provide unsigned ranges;
 - `double` is a 64-bit floating-point number;
 - `bool` stores `true` or `false`;
 - `char` stores one Unicode scalar value;
 - `string` stores dynamically sized UTF-8 text;
 - `unit` represents the absence of a value.
 
-Fixed-width integers such as `int8`, `int16`, and their unsigned variants are
-planned together with checked conversions. Bounded strings and collections
-will address allocation limits; integer width alone does not prevent memory
-leaks.
+All integer conversions and same-width arithmetic are range checked. Bounded
+strings and collections are planned to address allocation limits; integer
+width alone does not prevent memory leaks.
 
 ```orni
 let name: string = "Orni";
@@ -108,6 +109,14 @@ cargo doc --no-deps --document-private-items --open
 
 Editors powered by rust-analyzer display these comments on hover and navigate
 to the documented declaration with Ctrl+Click.
+
+## Source layout
+
+- `src/frontend` contains lexing, parsing, and semantic type checking;
+- `src/syntax` contains tokens and abstract syntax tree nodes;
+- `src/runtime` contains execution state and the interpreter;
+- `src/diagnostics.rs` defines errors shared by every stage;
+- `src/lib.rs` connects the complete source-to-execution pipeline.
 
 ## Roadmap
 

@@ -21,11 +21,11 @@ const builtins = {
 
 const backendSymbols = {
   print: {
-    path: ["src", "interpreter.rs"],
+    path: ["src", "runtime", "interpreter.rs"],
     needle: "Statement::Print(expression) => {",
   },
   func: {
-    path: ["src", "interpreter.rs"],
+    path: ["src", "runtime", "interpreter.rs"],
     needle: "Statement::Function {",
   },
 };

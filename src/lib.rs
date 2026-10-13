@@ -7,21 +7,15 @@
 
 #![warn(missing_docs)]
 
-mod ast;
-mod environment;
-mod error;
-mod interpreter;
-mod lexer;
-mod parser;
-mod token;
-mod type_checker;
+mod diagnostics;
+mod frontend;
+mod runtime;
+mod syntax;
 
-pub use error::OrniError;
+pub use diagnostics::OrniError;
 
-use interpreter::Interpreter;
-use lexer::Lexer;
-use parser::Parser;
-use type_checker::TypeChecker;
+use frontend::{Lexer, Parser, TypeChecker};
+use runtime::Interpreter;
 
 /// Checks an Orni program without executing it.
 ///
@@ -50,7 +44,7 @@ pub fn run(source: &str) -> Result<String, OrniError> {
 }
 
 /// Produces a validated syntax tree shared by checking and execution.
-fn compile(source: &str) -> Result<Vec<ast::Statement>, OrniError> {
+fn compile(source: &str) -> Result<Vec<syntax::Statement>, OrniError> {
     let tokens = Lexer::new(source).scan_tokens()?;
     let program = Parser::new(tokens).parse()?;
     TypeChecker::new().check(&program)?;
@@ -267,9 +261,39 @@ mod tests {
 
     #[test]
     fn reports_checked_integer_overflow() {
-        let error = run("print 9223372036854775807 + 1;")
+        let error = run("let maximum: int8 = 127; let one: int8 = 1; print maximum + one;")
             .expect_err("integer arithmetic must not overflow silently");
 
-        assert!(error.to_string().contains("int overflow"));
+        assert!(error.to_string().contains("out of range for int8"));
+    }
+
+    #[test]
+    fn supports_fixed_width_signed_and_unsigned_integers() {
+        let output = run(r#"
+                let signed: int8 = -128;
+                let port: uint16 = 8080;
+                let users: int32 = 250000;
+                let maximum: uint64 = 18446744073709551615;
+
+                print signed;
+                print port;
+                print users;
+                print maximum;
+            "#)
+        .expect("fixed-width integers should accept values in range");
+
+        assert_eq!(output, "-128\n8080\n250000\n18446744073709551615\n");
+    }
+
+    #[test]
+    fn rejects_integer_conversions_outside_the_target_range() {
+        let error = run("let retries: uint8 = 256;")
+            .expect_err("checked integer conversion must reject values outside its range");
+
+        assert!(
+            error
+                .to_string()
+                .contains("value 256 is out of range for uint8")
+        );
     }
 }

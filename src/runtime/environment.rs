@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::Value;
+use crate::syntax::Value;
 
 /// Stores variables visible to the interpreter.
 ///

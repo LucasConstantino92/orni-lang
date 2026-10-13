@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use crate::{
-    ast::{Expression, Parameter, Statement, TypeName, Value},
-    environment::Environment,
-    error::OrniError,
-    token::{Token, TokenKind},
+    diagnostics::OrniError,
+    syntax::{Expression, IntegerType, Parameter, Statement, Token, TokenKind, TypeName, Value},
 };
+
+use super::environment::Environment;
 
 #[derive(Clone)]
 /// A function declaration stored for later invocation.
@@ -80,7 +80,7 @@ impl Interpreter {
                 value,
             } => {
                 let identifier = identifier_name(name);
-                let value = coerce_value(self.evaluate(value)?, *declared_type);
+                let value = coerce_value(self.evaluate(value)?, *declared_type, name)?;
                 self.environment.define(identifier.to_owned(), value);
             }
             Statement::Function {
@@ -156,10 +156,13 @@ impl Interpreter {
             Expression::Unary { operator, right } => {
                 let right = self.evaluate(right)?;
                 match (&operator.kind, right) {
-                    (TokenKind::Minus, Value::Int(number)) => number
-                        .checked_neg()
-                        .map(Value::Int)
-                        .ok_or_else(|| runtime_error(operator, "int overflow")),
+                    (
+                        TokenKind::Minus,
+                        Value::Integer {
+                            value,
+                            integer_type,
+                        },
+                    ) => checked_integer(-value, integer_type, operator),
                     (TokenKind::Minus, Value::Double(number)) => Ok(Value::Double(-number)),
                     (TokenKind::Bang, Value::Bool(value)) => Ok(Value::Bool(!value)),
                     (TokenKind::Minus, _) => {
@@ -242,7 +245,7 @@ impl Interpreter {
         let result = self
             .bind_parameters(&function.parameters, values)
             .and_then(|()| self.execute_function_body(&function.body))
-            .map(|value| coerce_value(value, Some(function.return_type)));
+            .and_then(|value| coerce_value(value, Some(function.return_type), closing_parenthesis));
         self.environment.exit_function_scope();
         result
     }
@@ -264,7 +267,7 @@ impl Interpreter {
                         .expect("the arity check guarantees a default value"),
                 )?,
             };
-            let value = coerce_value(value, Some(parameter.type_name));
+            let value = coerce_value(value, Some(parameter.type_name), &parameter.name)?;
             self.environment
                 .define(identifier_name(&parameter.name).to_owned(), value);
         }
@@ -310,15 +313,25 @@ impl Interpreter {
             (TokenKind::Plus, left, Value::String(right)) => {
                 Ok(Value::String(left.to_string() + &right))
             }
-            (_, Value::Int(left), Value::Int(right)) => self.integer_binary(left, operator, right),
+            (
+                _,
+                Value::Integer {
+                    value: left,
+                    integer_type: left_type,
+                },
+                Value::Integer {
+                    value: right,
+                    integer_type: right_type,
+                },
+            ) => self.integer_binary(left, left_type, operator, right, right_type),
             (_, Value::Double(left), Value::Double(right)) => {
                 self.double_binary(left, operator, right)
             }
-            (_, Value::Int(left), Value::Double(right)) => {
-                self.double_binary(left as f64, operator, right)
+            (_, Value::Integer { value: left, .. }, Value::Double(right)) => {
+                self.double_binary(integer_to_double(left, operator)?, operator, right)
             }
-            (_, Value::Double(left), Value::Int(right)) => {
-                self.double_binary(left, operator, right as f64)
+            (_, Value::Double(left), Value::Integer { value: right, .. }) => {
+                self.double_binary(left, operator, integer_to_double(right, operator)?)
             }
             (TokenKind::EqualEqual, left, right) => Ok(Value::Bool(left == right)),
             (TokenKind::BangEqual, left, right) => Ok(Value::Bool(left != right)),
@@ -342,18 +355,30 @@ impl Interpreter {
     }
 
     /// Applies a checked operation to two integer operands.
-    fn integer_binary(&self, left: i64, operator: &Token, right: i64) -> Result<Value, OrniError> {
-        let checked = |value: Option<i64>| {
+    fn integer_binary(
+        &self,
+        left: i128,
+        left_type: IntegerType,
+        operator: &Token,
+        right: i128,
+        right_type: IntegerType,
+    ) -> Result<Value, OrniError> {
+        let result_type = if left_type == right_type {
+            left_type
+        } else {
+            IntegerType::Int64
+        };
+        let checked = |value: Option<i128>| {
             value
-                .map(Value::Int)
-                .ok_or_else(|| runtime_error(operator, "int overflow"))
+                .ok_or_else(|| runtime_error(operator, "integer arithmetic overflow"))
+                .and_then(|value| checked_integer(value, result_type, operator))
         };
         match operator.kind {
             TokenKind::Plus => checked(left.checked_add(right)),
             TokenKind::Minus => checked(left.checked_sub(right)),
             TokenKind::Star => checked(left.checked_mul(right)),
             TokenKind::Slash if right == 0 => Err(runtime_error(operator, "division by zero")),
-            TokenKind::Slash => checked(left.checked_div(right)),
+            TokenKind::Slash => checked_integer(left / right, result_type, operator),
             TokenKind::Greater => Ok(Value::Bool(left > right)),
             TokenKind::GreaterEqual => Ok(Value::Bool(left >= right)),
             TokenKind::Less => Ok(Value::Bool(left < right)),
@@ -396,10 +421,51 @@ fn runtime_error(token: &Token, message: &str) -> OrniError {
     OrniError::runtime(token.line, token.column, message)
 }
 
-/// Applies the only implicit numeric widening supported by Orni.
-fn coerce_value(value: Value, expected: Option<TypeName>) -> Value {
+/// Applies checked integer conversions and numeric widening.
+fn coerce_value(
+    value: Value,
+    expected: Option<TypeName>,
+    token: &Token,
+) -> Result<Value, OrniError> {
     match (value, expected) {
-        (Value::Int(value), Some(TypeName::Double)) => Value::Double(value as f64),
-        (value, _) => value,
+        (Value::Integer { value, .. }, Some(TypeName::Double)) => {
+            Ok(Value::Double(integer_to_double(value, token)?))
+        }
+        (Value::Integer { value, .. }, Some(TypeName::Integer(integer_type))) => {
+            checked_integer(value, integer_type, token)
+        }
+        (value, _) => Ok(value),
+    }
+}
+
+/// Converts an integer only when a `double` can represent it exactly.
+fn integer_to_double(value: i128, token: &Token) -> Result<f64, OrniError> {
+    let converted = value as f64;
+    if converted as i128 == value {
+        Ok(converted)
+    } else {
+        Err(runtime_error(
+            token,
+            &format!("value {value} cannot be represented exactly as double"),
+        ))
+    }
+}
+
+/// Builds an integer value only when it fits its selected range.
+fn checked_integer(
+    value: i128,
+    integer_type: IntegerType,
+    token: &Token,
+) -> Result<Value, OrniError> {
+    if integer_type.contains(value) {
+        Ok(Value::Integer {
+            value,
+            integer_type,
+        })
+    } else {
+        Err(runtime_error(
+            token,
+            &format!("value {value} is out of range for {integer_type}"),
+        ))
     }
 }

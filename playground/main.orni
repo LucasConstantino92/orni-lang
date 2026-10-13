@@ -4,6 +4,8 @@ let project: string = "Orni";
 let version: int = 1;
 let initial: char = 'O';
 let progress: double = 0.4;
+let worker_count: uint8 = 8;
+let server_port: uint16 = 8080;
 
 /// Describes the current development status of a project.
 func status(name: string, current_version: int = 1) -> string {
@@ -18,4 +20,6 @@ print status(project, version);
 print status("A new project");
 print initial;
 print progress;
+print worker_count;
+print server_port;
 print 6 * 7 == 42;
