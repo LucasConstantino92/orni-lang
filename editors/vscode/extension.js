@@ -195,6 +195,30 @@ function signatureHelpFor(document, position) {
   return help;
 }
 
+/** Shows compiler-like inferred types without changing the source document. */
+function inlayHintsFor(document, range) {
+  return findVariables(document.getText())
+    .filter(
+      (variable) =>
+        !variable.typeName &&
+        variable.inferredType &&
+        range.contains(document.positionAt(variable.offset)),
+    )
+    .map((variable) => {
+      const position = document.positionAt(variable.offset + variable.name.length);
+      const hint = new vscode.InlayHint(
+        position,
+        `: ${variable.inferredType}`,
+        vscode.InlayHintKind.Type,
+      );
+      hint.tooltip = new vscode.MarkdownString(
+        `Orni inferred \`${variable.inferredType}\` from the assigned value. The source code remains unchanged.`,
+      );
+      hint.paddingRight = true;
+      return hint;
+    });
+}
+
 /** Converts a compiler diagnostic into an editor marker. */
 function diagnosticFromCompiler(document, output) {
   const match = output.match(
@@ -416,6 +440,9 @@ function activate(context) {
       "(",
       ",",
     ),
+    vscode.languages.registerInlayHintsProvider(selector, {
+      provideInlayHints: inlayHintsFor,
+    }),
     vscode.workspace.onDidSaveTextDocument((document) =>
       scheduleDiagnostics(document, diagnostics),
     ),

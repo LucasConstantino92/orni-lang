@@ -2,7 +2,7 @@
   "name": "orni-language",
   "displayName": "Orni Language",
   "description": "Language support for the Orni programming language.",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "publisher": "orni-lang",
   "engines": {
     "vscode": ">=1.80.0"

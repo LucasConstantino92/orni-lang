@@ -5,7 +5,7 @@
 <h1 align="center">Orni</h1>
 
 <p align="center">
-  <strong>A small, safety-oriented programming language built in Rust.</strong>
+  <strong>A server framework powered by a small, safety-oriented language built in Rust.</strong>
 </p>
 
 <p align="center">
@@ -25,10 +25,23 @@
 
 ## Why Orni?
 
-Orni explores what a server-oriented language can look like when safe defaults
-are concise instead of verbose. The name combines the platypus with the idea of
-**Oriented Injection**: application dependencies should eventually be explicit,
-replaceable, and natural to express in source code.
+Orni is being built as a server application framework with its own focused
+language. Safe defaults should be concise instead of verbose. The name combines
+the platypus with the idea of **Oriented Injection**: application dependencies
+should eventually be explicit, replaceable, and natural to express in source
+code.
+
+The project is divided conceptually into three layers:
+
+- **Orni Framework** — the future application model for HTTP, configuration,
+  validation, observability, persistence adapters, and dependency injection;
+- **Orni Language** — the compact `.orni` syntax used to describe application
+  behavior and dependencies;
+- **Orni Runtime** — the Rust implementation responsible for analysis, safe
+  execution, resource boundaries, and framework services.
+
+Today, the language and runtime form the working foundation. Framework services
+will be added incrementally on top of them.
 
 The current foundation focuses on:
 
@@ -216,6 +229,7 @@ Visual Studio Code, and compatible editors. It currently provides:
 - context-aware Quick Fix actions through `Ctrl+.`;
 - unused-variable warnings;
 - hover documentation and inferred type information;
+- inline type hints for inferred variables;
 - function signature help;
 - Ctrl+Click navigation to declarations;
 - Ctrl+Click navigation from language built-ins to their Rust implementation.
