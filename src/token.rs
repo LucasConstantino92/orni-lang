@@ -21,8 +21,8 @@ impl Token {
 pub(crate) enum TokenKind {
     /// The `let` keyword.
     Let,
-    /// The `fn` keyword.
-    Fn,
+    /// The `func` keyword.
+    Func,
     /// The `print` keyword.
     Print,
     /// The `return` keyword.
@@ -37,10 +37,14 @@ pub(crate) enum TokenKind {
     False,
     /// A user-defined name.
     Identifier(String),
-    /// A double-precision numeric literal.
-    Number(f64),
+    /// A signed 64-bit integer literal.
+    Int(i64),
+    /// A double-precision floating-point literal.
+    Double(f64),
     /// A UTF-8 string literal without its surrounding quotes.
     String(String),
+    /// A character literal without its surrounding quotes.
+    Char(char),
     /// The assignment symbol, `=`.
     Equal,
     /// The equality comparison symbol, `==`.
@@ -61,6 +65,8 @@ pub(crate) enum TokenKind {
     Plus,
     /// The subtraction or numeric-negation symbol, `-`.
     Minus,
+    /// The function return type arrow, `->`.
+    Arrow,
     /// The multiplication symbol, `*`.
     Star,
     /// The division symbol, `/`.
@@ -75,6 +81,8 @@ pub(crate) enum TokenKind {
     RightBrace,
     /// An argument or parameter separator, `,`.
     Comma,
+    /// A type annotation separator, `:`.
+    Colon,
     /// A statement terminator, `;`.
     Semicolon,
     /// A synthetic marker placed after the final source character.

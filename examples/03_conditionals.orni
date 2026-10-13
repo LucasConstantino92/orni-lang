@@ -1,6 +1,6 @@
 // Stage 3: comparisons, conditionals, and block scopes.
 
-fn temperature_label(celsius) {
+func temperature_label(celsius: int) -> string {
     if celsius >= 30 {
         let label = "hot";
         return label;

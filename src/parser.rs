@@ -1,5 +1,5 @@
 use crate::{
-    ast::{Expression, Statement, Value},
+    ast::{Expression, Parameter, Statement, TypeName, Value},
     error::OrniError,
     token::{Token, TokenKind},
 };
@@ -27,7 +27,7 @@ impl Parser {
 
     /// Parses the next statement by inspecting its leading token.
     fn statement(&mut self) -> Result<Statement, OrniError> {
-        if self.matches(|kind| matches!(kind, TokenKind::Fn)) {
+        if self.matches(|kind| matches!(kind, TokenKind::Func)) {
             return self.function_statement();
         }
         if self.matches(|kind| matches!(kind, TokenKind::Let)) {
@@ -53,7 +53,7 @@ impl Parser {
     fn function_statement(&mut self) -> Result<Statement, OrniError> {
         let name = self.consume(
             |kind| matches!(kind, TokenKind::Identifier(_)),
-            "expected a function name after 'fn'",
+            "expected a function name after 'func'",
         )?;
         self.consume(
             |kind| matches!(kind, TokenKind::LeftParen),
@@ -61,12 +61,36 @@ impl Parser {
         )?;
 
         let mut parameters = Vec::new();
+        let mut found_default = false;
         if !matches!(self.peek().kind, TokenKind::RightParen) {
             loop {
-                parameters.push(self.consume(
+                let parameter_name = self.consume(
                     |kind| matches!(kind, TokenKind::Identifier(_)),
                     "expected a parameter name",
-                )?);
+                )?;
+                self.consume(
+                    |kind| matches!(kind, TokenKind::Colon),
+                    "expected ':' after the parameter name",
+                )?;
+                let type_name = self.type_name()?;
+                let default_value = if self.matches(|kind| matches!(kind, TokenKind::Equal)) {
+                    found_default = true;
+                    Some(self.expression()?)
+                } else {
+                    if found_default {
+                        return Err(OrniError::syntax(
+                            parameter_name.line,
+                            parameter_name.column,
+                            "required parameters cannot follow optional parameters",
+                        ));
+                    }
+                    None
+                };
+                parameters.push(Parameter {
+                    name: parameter_name,
+                    type_name,
+                    default_value,
+                });
                 if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
                     break;
                 }
@@ -78,6 +102,11 @@ impl Parser {
             "expected ')' after the parameters",
         )?;
         self.consume(
+            |kind| matches!(kind, TokenKind::Arrow),
+            "expected '->' after the parameters",
+        )?;
+        let return_type = self.type_name()?;
+        self.consume(
             |kind| matches!(kind, TokenKind::LeftBrace),
             "expected '{' before the function body",
         )?;
@@ -86,8 +115,33 @@ impl Parser {
         Ok(Statement::Function {
             name,
             parameters,
+            return_type,
             body,
         })
+    }
+
+    /// Parses one of Orni's built-in type names.
+    fn type_name(&mut self) -> Result<TypeName, OrniError> {
+        let token = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a type name",
+        )?;
+        let TokenKind::Identifier(name) = &token.kind else {
+            unreachable!("the token was validated as an identifier")
+        };
+        match name.as_str() {
+            "int" => Ok(TypeName::Int),
+            "double" => Ok(TypeName::Double),
+            "string" => Ok(TypeName::String),
+            "bool" => Ok(TypeName::Bool),
+            "char" => Ok(TypeName::Char),
+            "unit" => Ok(TypeName::Unit),
+            _ => Err(OrniError::syntax(
+                token.line,
+                token.column,
+                format!("unknown type '{name}'"),
+            )),
+        }
     }
 
     /// Parses statements until a closing brace ends the current block.
@@ -109,6 +163,11 @@ impl Parser {
             |kind| matches!(kind, TokenKind::Identifier(_)),
             "expected a name after 'let'",
         )?;
+        let declared_type = if self.matches(|kind| matches!(kind, TokenKind::Colon)) {
+            Some(self.type_name()?)
+        } else {
+            None
+        };
         self.consume(
             |kind| matches!(kind, TokenKind::Equal),
             "expected '=' after the name",
@@ -118,7 +177,11 @@ impl Parser {
             |kind| matches!(kind, TokenKind::Semicolon),
             "expected ';' after the declaration",
         )?;
-        Ok(Statement::Let { name, value })
+        Ok(Statement::Let {
+            name,
+            declared_type,
+            value,
+        })
     }
 
     /// Parses a print statement terminated by a semicolon.
@@ -302,10 +365,12 @@ impl Parser {
     fn primary(&mut self) -> Result<Expression, OrniError> {
         let token = self.advance().clone();
         match token.kind.clone() {
-            TokenKind::Number(value) => Ok(Expression::Literal(Value::Number(value))),
+            TokenKind::Int(value) => Ok(Expression::Literal(Value::Int(value))),
+            TokenKind::Double(value) => Ok(Expression::Literal(Value::Double(value))),
             TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
-            TokenKind::True => Ok(Expression::Literal(Value::Boolean(true))),
-            TokenKind::False => Ok(Expression::Literal(Value::Boolean(false))),
+            TokenKind::Char(value) => Ok(Expression::Literal(Value::Char(value))),
+            TokenKind::True => Ok(Expression::Literal(Value::Bool(true))),
+            TokenKind::False => Ok(Expression::Literal(Value::Bool(false))),
             TokenKind::Identifier(_) => Ok(Expression::Variable(token)),
             TokenKind::LeftParen => {
                 let expression = self.expression()?;

@@ -1,5 +1,46 @@
 use crate::token::Token;
 
+/// A built-in type understood by Orni's semantic analyzer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TypeName {
+    /// A signed 64-bit integer.
+    Int,
+    /// A double-precision floating-point number.
+    Double,
+    /// A UTF-8 string.
+    String,
+    /// A boolean value.
+    Bool,
+    /// A single Unicode scalar value.
+    Char,
+    /// The absence of a meaningful value.
+    Unit,
+}
+
+impl std::fmt::Display for TypeName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int => write!(formatter, "int"),
+            Self::Double => write!(formatter, "double"),
+            Self::String => write!(formatter, "string"),
+            Self::Bool => write!(formatter, "bool"),
+            Self::Char => write!(formatter, "char"),
+            Self::Unit => write!(formatter, "unit"),
+        }
+    }
+}
+
+/// A named function parameter with an explicit type and optional default.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Parameter {
+    /// The parameter name and its source position.
+    pub name: Token,
+    /// The type accepted by the parameter.
+    pub type_name: TypeName,
+    /// The expression used when the caller omits this argument.
+    pub default_value: Option<Expression>,
+}
+
 /// A complete action that can appear in an Orni program.
 ///
 /// Statements perform work but do not directly produce a reusable value.
@@ -9,6 +50,8 @@ pub(crate) enum Statement {
     Let {
         /// The variable name and its source position.
         name: Token,
+        /// An optional type required by the declaration.
+        declared_type: Option<TypeName>,
         /// The expression evaluated before the variable is defined.
         value: Expression,
     },
@@ -17,7 +60,9 @@ pub(crate) enum Statement {
         /// The function name and its source position.
         name: Token,
         /// The ordered names bound to arguments during a call.
-        parameters: Vec<Token>,
+        parameters: Vec<Parameter>,
+        /// The value type produced by the function.
+        return_type: TypeName,
         /// The statements executed when the function is called.
         body: Vec<Statement>,
     },
@@ -86,12 +131,16 @@ pub(crate) enum Expression {
 /// A runtime value understood by the current Orni interpreter.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Value {
-    /// A double-precision number.
-    Number(f64),
+    /// A signed 64-bit integer.
+    Int(i64),
+    /// A double-precision floating-point number.
+    Double(f64),
     /// A UTF-8 string.
     String(String),
     /// A boolean value.
-    Boolean(bool),
+    Bool(bool),
+    /// A single Unicode scalar value.
+    Char(char),
     /// The absence of a meaningful value, currently returned by functions.
     Unit,
 }
@@ -99,11 +148,26 @@ pub(crate) enum Value {
 impl std::fmt::Display for Value {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Number(number) if number.fract() == 0.0 => write!(formatter, "{number:.0}"),
-            Self::Number(number) => write!(formatter, "{number}"),
+            Self::Int(number) => write!(formatter, "{number}"),
+            Self::Double(number) => write!(formatter, "{number}"),
             Self::String(value) => write!(formatter, "{value}"),
-            Self::Boolean(value) => write!(formatter, "{value}"),
+            Self::Bool(value) => write!(formatter, "{value}"),
+            Self::Char(value) => write!(formatter, "{value}"),
             Self::Unit => write!(formatter, "unit"),
+        }
+    }
+}
+
+impl Value {
+    /// Returns the built-in Orni type represented by this runtime value.
+    pub fn type_name(&self) -> TypeName {
+        match self {
+            Self::Int(_) => TypeName::Int,
+            Self::Double(_) => TypeName::Double,
+            Self::String(_) => TypeName::String,
+            Self::Bool(_) => TypeName::Bool,
+            Self::Char(_) => TypeName::Char,
+            Self::Unit => TypeName::Unit,
         }
     }
 }

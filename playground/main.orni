@@ -1,9 +1,12 @@
 // Edit this file while learning and developing Orni.
 
-let project = "Orni";
-let version = 1;
+let project: string = "Orni";
+let version: int = 1;
+let initial: char = 'O';
+let progress: double = 0.4;
 
-fn status(name, current_version) {
+/// Describes the current development status of a project.
+func status(name: string, current_version: int = 1) -> string {
     if current_version >= 1 {
         return name + " is growing!";
     } else {
@@ -12,4 +15,7 @@ fn status(name, current_version) {
 }
 
 print status(project, version);
+print status("A new project");
+print initial;
+print progress;
 print 6 * 7 == 42;

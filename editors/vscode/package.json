@@ -2,7 +2,7 @@
   "name": "orni-language",
   "displayName": "Orni Language",
   "description": "Language support for the Orni programming language.",
-  "version": "0.1.1",
+  "version": "0.4.0",
   "publisher": "orni-lang",
   "engines": {
     "vscode": ">=1.80.0"
@@ -10,11 +10,15 @@
   "categories": ["Programming Languages"],
   "keywords": ["orni", "language", "syntax"],
   "files": [
+    "extension.js",
+    "language-support.js",
     "icons",
     "syntaxes",
     "language-configuration.json",
     "README.md"
   ],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:orni"],
   "contributes": {
     "languages": [
       {

@@ -42,6 +42,7 @@ impl Lexer {
                 '{' => TokenKind::LeftBrace,
                 '}' => TokenKind::RightBrace,
                 ',' => TokenKind::Comma,
+                ':' => TokenKind::Colon,
                 ';' => TokenKind::Semicolon,
                 '=' if self.matches('=') => TokenKind::EqualEqual,
                 '=' => TokenKind::Equal,
@@ -52,6 +53,7 @@ impl Lexer {
                 '<' if self.matches('=') => TokenKind::LessEqual,
                 '<' => TokenKind::Less,
                 '+' => TokenKind::Plus,
+                '-' if self.matches('>') => TokenKind::Arrow,
                 '-' => TokenKind::Minus,
                 '*' => TokenKind::Star,
                 '/' if self.peek() == Some('/') => {
@@ -62,7 +64,8 @@ impl Lexer {
                 }
                 '/' => TokenKind::Slash,
                 '"' => self.string(line, column)?,
-                digit if digit.is_ascii_digit() => self.number(digit),
+                '\'' => self.character(line, column)?,
+                digit if digit.is_ascii_digit() => self.number(digit, line, column)?,
                 first if is_identifier_start(first) => self.identifier(first),
                 other => {
                     return Err(OrniError::lexical(
@@ -78,6 +81,51 @@ impl Lexer {
 
         tokens.push(Token::new(TokenKind::Eof, self.line, self.column));
         Ok(tokens)
+    }
+
+    /// Scans exactly one character after its opening quote has been consumed.
+    fn character(&mut self, line: usize, column: usize) -> Result<TokenKind, OrniError> {
+        let Some(character) = self.peek() else {
+            return Err(OrniError::lexical(line, column, "unterminated character"));
+        };
+        if character == '\'' || character == '\n' {
+            return Err(OrniError::lexical(
+                line,
+                column,
+                "a character literal must contain exactly one character",
+            ));
+        }
+
+        let value = if self.advance() == '\\' {
+            let Some(escaped) = self.peek() else {
+                return Err(OrniError::lexical(line, column, "unterminated character"));
+            };
+            self.advance();
+            match escaped {
+                'n' => '\n',
+                't' => '\t',
+                '\'' => '\'',
+                '\\' => '\\',
+                other => {
+                    return Err(OrniError::lexical(
+                        line,
+                        column,
+                        format!("unsupported character escape '\\{other}'"),
+                    ));
+                }
+            }
+        } else {
+            character
+        };
+
+        if !self.matches('\'') {
+            return Err(OrniError::lexical(
+                line,
+                column,
+                "a character literal must contain exactly one character",
+            ));
+        }
+        Ok(TokenKind::Char(value))
     }
 
     /// Scans a string after its opening quote has been consumed.
@@ -112,21 +160,33 @@ impl Lexer {
     }
 
     /// Scans a numeric literal after its first digit has been consumed.
-    fn number(&mut self, first: char) -> TokenKind {
+    fn number(&mut self, first: char, line: usize, column: usize) -> Result<TokenKind, OrniError> {
         let mut value = String::from(first);
 
         while self.peek().is_some_and(|next| next.is_ascii_digit()) {
             value.push(self.advance());
         }
 
-        if self.peek() == Some('.') && self.peek_next().is_some_and(|next| next.is_ascii_digit()) {
+        let is_double =
+            self.peek() == Some('.') && self.peek_next().is_some_and(|next| next.is_ascii_digit());
+        if is_double {
             value.push(self.advance());
             while self.peek().is_some_and(|next| next.is_ascii_digit()) {
                 value.push(self.advance());
             }
         }
 
-        TokenKind::Number(value.parse().expect("number validated by the lexer"))
+        if is_double {
+            value
+                .parse()
+                .map(TokenKind::Double)
+                .map_err(|_| OrniError::lexical(line, column, "double literal is out of range"))
+        } else {
+            value
+                .parse()
+                .map(TokenKind::Int)
+                .map_err(|_| OrniError::lexical(line, column, "int literal is out of range"))
+        }
     }
 
     /// Scans an identifier and promotes reserved words to keyword tokens.
@@ -138,7 +198,7 @@ impl Lexer {
 
         match value.as_str() {
             "let" => TokenKind::Let,
-            "fn" => TokenKind::Fn,
+            "func" => TokenKind::Func,
             "print" => TokenKind::Print,
             "return" => TokenKind::Return,
             "if" => TokenKind::If,
@@ -220,6 +280,25 @@ mod tests {
                 TokenKind::Print,
                 TokenKind::Identifier("name".into()),
                 TokenKind::Semicolon,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn distinguishes_integer_double_and_character_literals() {
+        let tokens = Lexer::new("1 1.5 'O' '\\n'")
+            .scan_tokens()
+            .expect("the input should be valid");
+        let kinds: Vec<_> = tokens.into_iter().map(|token| token.kind).collect();
+
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Int(1),
+                TokenKind::Double(1.5),
+                TokenKind::Char('O'),
+                TokenKind::Char('\n'),
                 TokenKind::Eof,
             ]
         );

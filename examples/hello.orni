@@ -1,8 +1,8 @@
 // The first executable Orni program.
-let name = "Orni";
-let meaning = "Oriented Injection";
+let name: string = "Orni";
+let meaning: string = "Oriented Injection";
 
-fn describe(project, description) {
+func describe(project: string, description: string) -> string {
     return project + " means " + description;
 }
 

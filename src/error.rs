@@ -29,6 +29,11 @@ impl OrniError {
         Self::new("Runtime error", line, column, message)
     }
 
+    /// Creates an error reported by semantic analysis.
+    pub(crate) fn semantic(line: usize, column: usize, message: impl Into<String>) -> Self {
+        Self::new("Semantic error", line, column, message)
+    }
+
     fn new(phase: &'static str, line: usize, column: usize, message: impl Into<String>) -> Self {
         Self {
             phase,

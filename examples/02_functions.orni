@@ -1,7 +1,8 @@
-// Stage 2: functions, parameters, and return values.
+// Stage 2: functions, parameters, return values, and documentation.
 
-fn greet(name) {
-    return "Hello, " + name;
+/// Returns a friendly greeting for the provided name.
+func greet(name: string, greeting: string = "Hello") -> string {
+    return greeting + ", " + name;
 }
 
 print greet("Orni");

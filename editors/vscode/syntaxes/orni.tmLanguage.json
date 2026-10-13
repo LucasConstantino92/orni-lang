@@ -5,7 +5,9 @@
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
+    { "include": "#characters" },
     { "include": "#numbers" },
+    { "include": "#types" },
     { "include": "#functionDeclarations" },
     { "include": "#keywords" },
     { "include": "#constants" },
@@ -36,6 +38,14 @@
         }
       ]
     },
+    "characters": {
+      "patterns": [
+        {
+          "name": "constant.character.orni",
+          "match": "'(?:\\\\[nt'\\\\]|[^'\\r\\n])'"
+        }
+      ]
+    },
     "numbers": {
       "patterns": [
         {
@@ -44,10 +54,18 @@
         }
       ]
     },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.orni",
+          "match": "\\b(?:string|int|double|bool|char|unit)\\b"
+        }
+      ]
+    },
     "functionDeclarations": {
       "patterns": [
         {
-          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "storage.type.function.orni" },
             "2": { "name": "entity.name.function.orni" }
@@ -63,7 +81,7 @@
         },
         {
           "name": "storage.type.orni",
-          "match": "\\b(?:let|fn)\\b"
+          "match": "\\b(?:let|func)\\b"
         },
         {
           "name": "support.function.orni",
@@ -83,7 +101,7 @@
       "patterns": [
         {
           "name": "keyword.operator.orni",
-          "match": "==|!=|>=|<=|[=+\\-*/!<>]"
+          "match": "->|==|!=|>=|<=|[=:+\\-*/!<>]"
         }
       ]
     },

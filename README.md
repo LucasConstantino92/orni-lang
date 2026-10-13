@@ -10,8 +10,8 @@ explicit, easy to replace, and a natural part of the syntax.
 The first milestone is a minimal vertical slice: read an `.orni` file, parse
 its syntax, and execute it. The language currently supports:
 
-- variables declared with `let`;
-- functions with parameters, return values, and isolated lexical scopes;
+- variables declared with `let`, with optional type annotations;
+- functions with typed parameters, optional defaults, typed return values, and isolated lexical scopes;
 - comparisons with `==`, `!=`, `>`, `>=`, `<`, and `<=`;
 - boolean negation with `!`;
 - `if`/`else` statements and nested block scopes;
@@ -21,10 +21,24 @@ its syntax, and execute it. The language currently supports:
 - comments starting with `//`;
 - errors containing line and column information.
 
+The primitive types use lowercase names and have explicit runtime behavior:
+
+- `int` is a signed 64-bit integer with checked arithmetic;
+- `double` is a 64-bit floating-point number;
+- `bool` stores `true` or `false`;
+- `char` stores one Unicode scalar value;
+- `string` stores dynamically sized UTF-8 text;
+- `unit` represents the absence of a value.
+
+Fixed-width integers such as `int8`, `int16`, and their unsigned variants are
+planned together with checked conversions. Bounded strings and collections
+will address allocation limits; integer width alone does not prevent memory
+leaks.
+
 ```orni
-let name = "Orni";
-fn greet(subject) {
-    return "Hello, " + subject;
+let name: string = "Orni";
+func greet(subject: string, greeting: string = "Hello") -> string {
+    return greeting + ", " + subject;
 }
 
 print greet(name);
@@ -33,14 +47,21 @@ print 6 * 7;
 
 ## Playground
 
-Open `playground/main.orni`, change the program, and press `Ctrl+Shift+B` in
-Visual Studio Code. The default build task runs that file through the Orni
-interpreter.
+Open any `.orni` file and press `Ctrl+Shift+B` in a compatible editor such as
+Antigravity, Visual Studio Code, or Cursor. The default build task runs the
+active file through the Orni interpreter. The separate `Orni: Run playground`
+task always runs `playground/main.orni`.
 
 You can also run it from a terminal:
 
 ```sh
 cargo run --target wasm32-wasip1 -- playground/main.orni
+```
+
+Validate a file without executing it with:
+
+```sh
+cargo run --target wasm32-wasip1 -- --check playground/main.orni
 ```
 
 The development runner uses WASI so contributors can execute Orni without a
