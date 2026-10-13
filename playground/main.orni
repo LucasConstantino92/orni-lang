@@ -1,6 +1,7 @@
 // Edit this file while learning and developing Orni.
 
-let project: string = "Orni";
+// Hover over `project` to see its inferred `string<4>` type.
+let project = "Orni";
 let version: int = 1;
 let initial: char = 'O';
 let progress: double = 0.4;

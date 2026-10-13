@@ -6,7 +6,9 @@ This extension provides basic editor support for `.orni` files:
 - syntax highlighting;
 - hover documentation for keywords, built-ins, functions, and typed variables;
 - signature help for typed parameters and default values;
-- compiler diagnostics after saving an Orni file;
+- live compiler diagnostics while editing, without running the program;
+- warnings for unused variables;
+- rich documentation for primitive types;
 - Ctrl+Click navigation to function and variable declarations;
 - Ctrl+Click navigation from built-ins and language keywords to their Rust implementation;
 - line comment toggling with `//`;
@@ -24,7 +26,7 @@ npx @vscode/vsce package --allow-missing-repository
 Install the generated VSIX:
 
 ```sh
-code --install-extension orni-language-0.5.0.vsix
+code --install-extension orni-language-0.6.0.vsix
 ```
 
 Alternatively, use **Extensions: Install from VSIX...** from the Command

@@ -59,8 +59,8 @@ pub(crate) enum TypeName {
     Integer(IntegerType),
     /// A double-precision floating-point number.
     Double,
-    /// A UTF-8 string.
-    String,
+    /// A UTF-8 string with an optional maximum byte capacity.
+    String(Option<usize>),
     /// A boolean value.
     Bool,
     /// A single Unicode scalar value.
@@ -74,7 +74,8 @@ impl std::fmt::Display for TypeName {
         match self {
             Self::Integer(integer_type) => write!(formatter, "{integer_type}"),
             Self::Double => write!(formatter, "double"),
-            Self::String => write!(formatter, "string"),
+            Self::String(Some(max_bytes)) => write!(formatter, "string<{max_bytes}>"),
+            Self::String(None) => write!(formatter, "string"),
             Self::Bool => write!(formatter, "bool"),
             Self::Char => write!(formatter, "char"),
             Self::Unit => write!(formatter, "unit"),
@@ -221,7 +222,7 @@ impl Value {
         match self {
             Self::Integer { integer_type, .. } => TypeName::Integer(*integer_type),
             Self::Double(_) => TypeName::Double,
-            Self::String(_) => TypeName::String,
+            Self::String(value) => TypeName::String(Some(value.len())),
             Self::Bool(_) => TypeName::Bool,
             Self::Char(_) => TypeName::Char,
             Self::Unit => TypeName::Unit,

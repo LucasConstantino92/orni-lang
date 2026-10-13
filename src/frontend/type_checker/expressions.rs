@@ -52,8 +52,11 @@ impl TypeChecker {
         let left_type = self.expression_type(left)?;
         let right_type = self.expression_type(right)?;
         match operator.kind {
-            TokenKind::Plus if left_type == TypeName::String || right_type == TypeName::String => {
-                Ok(TypeName::String)
+            TokenKind::Plus
+                if matches!(left_type, TypeName::String(_))
+                    || matches!(right_type, TypeName::String(_)) =>
+            {
+                Ok(string_concatenation_type(left_type, right_type))
             }
             TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash => {
                 self.require_numeric(operator, left_type, "left operand")?;
@@ -69,7 +72,10 @@ impl TypeChecker {
                 Ok(TypeName::Bool)
             }
             TokenKind::EqualEqual | TokenKind::BangEqual => {
-                if !(is_numeric(left_type) && is_numeric(right_type)) {
+                let both_numeric = is_numeric(left_type) && is_numeric(right_type);
+                let both_strings = matches!(left_type, TypeName::String(_))
+                    && matches!(right_type, TypeName::String(_));
+                if !both_numeric && !both_strings {
                     self.require_type(operator, left_type, right_type, "right operand")?;
                 }
                 Ok(TypeName::Bool)
@@ -123,5 +129,15 @@ impl TypeChecker {
             self.require_type(closing_parenthesis, *expected, actual, "function argument")?;
         }
         Ok(signature.return_type)
+    }
+}
+
+/// Infers the maximum UTF-8 byte length produced by string concatenation.
+fn string_concatenation_type(left: TypeName, right: TypeName) -> TypeName {
+    match (left, right) {
+        (TypeName::String(Some(left)), TypeName::String(Some(right))) => {
+            TypeName::String(left.checked_add(right))
+        }
+        _ => TypeName::String(None),
     }
 }

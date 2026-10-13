@@ -2,7 +2,7 @@ const identifierPattern = /[A-Za-z_][A-Za-z0-9_]*/;
 
 /** Finds all documented function declarations in an Orni source document. */
 function findFunctions(source) {
-  const pattern = /((?:^[ \t]*\/\/\/[^\r\n]*(?:\r?\n|$))*)^[ \t]*func[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(([^)]*)\)[ \t]*->[ \t]*([A-Za-z_][A-Za-z0-9_]*)/gm;
+  const pattern = /((?:^[ \t]*\/\/\/[^\r\n]*(?:\r?\n|$))*)^[ \t]*func[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(([^)]*)\)[ \t]*->[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?)/gm;
   const functions = [];
 
   for (const match of source.matchAll(pattern)) {
@@ -31,12 +31,29 @@ function findFunctions(source) {
 
 /** Finds every variable declaration in an Orni source document. */
 function findVariables(source) {
-  const pattern = /\blet[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*))?/g;
+  const pattern = /\blet[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?))?[ \t]*=[ \t]*([^;]+)/g;
   return Array.from(source.matchAll(pattern), (match) => ({
     name: match[1],
     typeName: match[2],
+    inferredType: match[2] ? undefined : inferExpressionType(match[3].trim()),
     offset: match.index + match[0].lastIndexOf(match[1]),
   }));
+}
+
+/** Infers simple literal types for fast editor hovers. */
+function inferExpressionType(expression) {
+  if (/^"(?:\\.|[^"\\])*"$/.test(expression)) {
+    try {
+      return `string<${Buffer.byteLength(JSON.parse(expression), "utf8")}>`;
+    } catch {
+      return undefined;
+    }
+  }
+  if (/^'(?:\\[nt'\\]|[^'\r\n])'$/.test(expression)) return "char";
+  if (/^(?:true|false)$/.test(expression)) return "bool";
+  if (/^-?\d+\.\d+$/.test(expression)) return "double";
+  if (/^-?\d+$/.test(expression)) return "int";
+  return undefined;
 }
 
 /** Returns the closest declaration visible before a symbol use. */
@@ -50,5 +67,6 @@ module.exports = {
   findClosestDeclaration,
   findFunctions,
   findVariables,
+  inferExpressionType,
   identifierPattern,
 };

@@ -30,11 +30,13 @@ The primitive types use lowercase names and have explicit runtime behavior:
 - `bool` stores `true` or `false`;
 - `char` stores one Unicode scalar value;
 - `string` stores dynamically sized UTF-8 text;
+- `string<N>` limits text to at most `N` UTF-8 bytes;
 - `unit` represents the absence of a value.
 
 All integer conversions and same-width arithmetic are range checked. Bounded
-strings and collections are planned to address allocation limits; integer
-width alone does not prevent memory leaks.
+strings are inferred from literals, so `let name = "Orni";` becomes
+`string<4>` without an annotation. Bounded collections are planned next;
+integer width alone does not prevent memory leaks.
 
 ```orni
 let name: string = "Orni";
@@ -63,6 +65,12 @@ Validate a file without executing it with:
 
 ```sh
 cargo run --target wasm32-wasip1 -- --check playground/main.orni
+```
+
+Editor integrations can validate unsaved source through standard input:
+
+```sh
+Get-Content playground/main.orni | cargo run --target wasm32-wasip1 -- --check-stdin
 ```
 
 The development runner uses WASI so contributors can execute Orni without a

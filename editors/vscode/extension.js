@@ -1,5 +1,5 @@
 const vscode = require("vscode");
-const { execFile } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const {
   findClosestDeclaration,
   findFunctions,
@@ -40,7 +40,17 @@ const keywordDocumentation = {
   false: "The boolean false value.",
 };
 
+const primitiveTypes = {
+  string: ["Dynamically sized UTF-8 text.", 'let name = "Orni"; // inferred as string<4>'],
+  int: ["A signed 64-bit integer with checked arithmetic.", "let workers: int = 8;"],
+  double: ["A 64-bit floating-point number.", "let ratio: double = 0.75;"],
+  bool: ["A logical value that is either true or false.", "let enabled: bool = true;"],
+  char: ["One Unicode scalar value.", "let initial: char = 'O';"],
+  unit: ["The absence of a reusable value.", "func log() -> unit { print \"done\"; }"],
+};
+
 const diagnosticTimers = new Map();
+const diagnosticProcesses = new Map();
 
 /** Returns the identifier and range under the cursor. */
 function symbolAt(document, position) {
@@ -88,6 +98,19 @@ function hoverFor(document, position) {
     return new vscode.Hover(new vscode.MarkdownString(keyword), symbol.range);
   }
 
+  const primitive =
+    primitiveTypes[symbol.name] ||
+    (/^(?:u?int)(?:8|16|32|64)$/.test(symbol.name)
+      ? ["A fixed-width integer with checked conversions and arithmetic.", `let value: ${symbol.name} = 1;`]
+      : undefined);
+  if (primitive) {
+    const markdown = new vscode.MarkdownString();
+    markdown.appendCodeblock(`final type ${symbol.name}`, "orni");
+    markdown.appendMarkdown(`\nDeclared in \`orni:core\`\n\n${primitive[0]}\n\n`);
+    markdown.appendCodeblock(primitive[1], "orni");
+    return new vscode.Hover(markdown, symbol.range);
+  }
+
   const source = document.getText();
   const usageOffset = document.offsetAt(position);
   const functionDeclaration = findClosestDeclaration(
@@ -110,12 +133,15 @@ function hoverFor(document, position) {
   const variable = findClosestDeclaration(findVariables(source), symbol.name, usageOffset);
   if (variable) {
     const markdown = new vscode.MarkdownString();
-    const annotation = variable.typeName ? `: ${variable.typeName}` : "";
+    const resolvedType = variable.typeName || variable.inferredType;
+    const annotation = resolvedType ? `: ${resolvedType}` : "";
     markdown.appendCodeblock(`let ${variable.name}${annotation}`, "orni");
     markdown.appendMarkdown(
       variable.typeName
         ? `\nVariable explicitly declared as \`${variable.typeName}\`.`
-        : "\nVariable whose type is inferred from its value.",
+        : resolvedType
+          ? `\nInferred by Orni from the assigned value. No annotation is required.`
+          : "\nVariable whose type is inferred from its value.",
     );
     return new vscode.Hover(markdown, symbol.range);
   }
@@ -172,27 +198,53 @@ function diagnosticFromCompiler(document, output) {
   ];
 }
 
-/** Checks a saved Orni file without executing its program. */
+/** Produces fast non-blocking warnings without invoking the compiler. */
+function lintDiagnostics(document) {
+  const source = document.getText();
+  return findVariables(source).flatMap((variable) => {
+    const uses = source.match(new RegExp(`\\b${variable.name}\\b`, "g")) || [];
+    if (uses.length > 1) return [];
+    const start = document.positionAt(variable.offset);
+    const diagnostic = new vscode.Diagnostic(
+      new vscode.Range(start, start.translate(0, variable.name.length)),
+      `Variable '${variable.name}' is never used.`,
+      vscode.DiagnosticSeverity.Warning,
+    );
+    diagnostic.source = "Orni lint";
+    return [diagnostic];
+  });
+}
+
+/** Checks the current in-memory source without executing its program. */
 function updateDiagnostics(document, diagnostics) {
-  if (document.languageId !== "orni" || document.isUntitled || document.isDirty) return;
+  if (document.languageId !== "orni") return;
   const folder = vscode.workspace.getWorkspaceFolder(document.uri);
   if (!folder) return;
 
-  execFile(
+  const key = document.uri.toString();
+  diagnosticProcesses.get(key)?.kill();
+  const process = spawn(
     "cargo",
-    ["run", "--quiet", "--target", "wasm32-wasip1", "--", "--check", document.fileName],
+    ["run", "--quiet", "--target", "wasm32-wasip1", "--", "--check-stdin"],
     { cwd: folder.uri.fsPath, windowsHide: true },
-    (error, stdout, stderr) => {
-      if (!error) {
-        diagnostics.delete(document.uri);
-        return;
-      }
-      diagnostics.set(document.uri, diagnosticFromCompiler(document, `${stderr}\n${stdout}`));
-    },
   );
+  diagnosticProcesses.set(key, process);
+  let output = "";
+  process.stdout.on("data", (chunk) => (output += chunk));
+  process.stderr.on("data", (chunk) => (output += chunk));
+  process.on("close", (code) => {
+    if (diagnosticProcesses.get(key) !== process) return;
+    diagnosticProcesses.delete(key);
+    const compilerDiagnostics = code === 0 ? [] : diagnosticFromCompiler(document, output);
+    diagnostics.set(
+      document.uri,
+      compilerDiagnostics.length > 0 ? compilerDiagnostics : lintDiagnostics(document),
+    );
+  });
+  process.stdin.end(document.getText());
 }
 
-/** Schedules diagnostics shortly after an Orni document is saved or opened. */
+/** Schedules diagnostics shortly after an Orni document changes. */
 function scheduleDiagnostics(document, diagnostics) {
   const key = document.uri.toString();
   clearTimeout(diagnosticTimers.get(key));
@@ -245,7 +297,15 @@ function activate(context) {
     vscode.workspace.onDidSaveTextDocument((document) =>
       scheduleDiagnostics(document, diagnostics),
     ),
-    vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
+    vscode.workspace.onDidChangeTextDocument(({ document }) =>
+      scheduleDiagnostics(document, diagnostics),
+    ),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      const key = document.uri.toString();
+      clearTimeout(diagnosticTimers.get(key));
+      diagnosticProcesses.get(key)?.kill();
+      diagnostics.delete(document.uri);
+    }),
   );
 
   for (const document of vscode.workspace.textDocuments) {

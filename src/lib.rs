@@ -53,7 +53,7 @@ fn compile(source: &str) -> Result<Vec<syntax::Statement>, OrniError> {
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{check, run};
 
     #[test]
     fn executes_a_small_program() {
@@ -222,7 +222,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Semantic error at line 1, column 5: variable value expects int, but found string"
+            "Semantic error at line 1, column 5: variable value expects int, but found string<3>"
         );
     }
 
@@ -294,6 +294,29 @@ mod tests {
             error
                 .to_string()
                 .contains("value 256 is out of range for uint8")
+        );
+    }
+
+    #[test]
+    fn infers_and_enforces_utf8_string_capacities() {
+        let output = run(r#"
+                let name = "Lucas";
+                let greeting: string<12> = "Hello, " + name;
+                let accented: string<4> = "Olá";
+
+                print greeting;
+                print accented;
+            "#)
+        .expect("inferred string capacities should fit their declarations");
+
+        assert_eq!(output, "Hello, Lucas\nOlá\n");
+
+        let error = check("let name: string<4> = \"Lucas\";")
+            .expect_err("a literal that exceeds its capacity must fail during checking");
+        assert!(
+            error
+                .to_string()
+                .contains("expects string<4>, but found string<5>")
         );
     }
 }

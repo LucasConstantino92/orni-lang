@@ -434,6 +434,17 @@ fn coerce_value(
         (Value::Integer { value, .. }, Some(TypeName::Integer(integer_type))) => {
             checked_integer(value, integer_type, token)
         }
+        (Value::String(value), Some(TypeName::String(Some(max_bytes))))
+            if value.len() > max_bytes =>
+        {
+            Err(runtime_error(
+                token,
+                &format!(
+                    "string requires {} UTF-8 byte(s), but allows at most {max_bytes}",
+                    value.len()
+                ),
+            ))
+        }
         (value, _) => Ok(value),
     }
 }

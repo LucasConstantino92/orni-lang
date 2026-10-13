@@ -27,3 +27,10 @@ test("finds the closest preceding variable", () => {
   assert.equal(declarations[0].typeName, "int");
   assert.equal(declarations[1].typeName, undefined);
 });
+
+test("infers bounded strings from UTF-8 literals", () => {
+  const [ascii, unicode] = findVariables('let name = "Lucas"; let greeting = "Olá";');
+
+  assert.equal(ascii.inferredType, "string<5>");
+  assert.equal(unicode.inferredType, "string<4>");
+});

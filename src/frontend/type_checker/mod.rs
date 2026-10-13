@@ -73,6 +73,7 @@ impl TypeChecker {
                 (expected, actual),
                 (TypeName::Integer(_), TypeName::Integer(_))
             )
+            || string_type_accepts(expected, actual)
         {
             Ok(())
         } else {
@@ -104,6 +105,15 @@ impl TypeChecker {
 /// Reports whether a type supports numeric operators.
 fn is_numeric(type_name: TypeName) -> bool {
     matches!(type_name, TypeName::Integer(_) | TypeName::Double)
+}
+
+/// Reports whether an actual string capacity satisfies a declared capacity.
+fn string_type_accepts(expected: TypeName, actual: TypeName) -> bool {
+    match (expected, actual) {
+        (TypeName::String(None), TypeName::String(_)) => true,
+        (TypeName::String(Some(maximum)), TypeName::String(Some(actual))) => actual <= maximum,
+        _ => false,
+    }
 }
 
 /// Chooses `double` when either numeric operand requires floating point.

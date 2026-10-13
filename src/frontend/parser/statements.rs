@@ -120,7 +120,32 @@ impl Parser {
             "uint32" => Ok(TypeName::Integer(IntegerType::UInt32)),
             "uint64" => Ok(TypeName::Integer(IntegerType::UInt64)),
             "double" => Ok(TypeName::Double),
-            "string" => Ok(TypeName::String),
+            "string" => {
+                let max_bytes = if self.matches(|kind| matches!(kind, TokenKind::Less)) {
+                    let size_token = self.consume(
+                        |kind| matches!(kind, TokenKind::Int(_)),
+                        "expected a byte limit after 'string<'",
+                    )?;
+                    let TokenKind::Int(size) = &size_token.kind else {
+                        unreachable!("the string size was validated as an integer")
+                    };
+                    if *size <= 0 || *size > usize::MAX as i128 {
+                        return Err(OrniError::syntax(
+                            size_token.line,
+                            size_token.column,
+                            "string capacity must be a positive platform-sized integer",
+                        ));
+                    }
+                    self.consume(
+                        |kind| matches!(kind, TokenKind::Greater),
+                        "expected '>' after the string byte limit",
+                    )?;
+                    Some(*size as usize)
+                } else {
+                    None
+                };
+                Ok(TypeName::String(max_bytes))
+            }
             "bool" => Ok(TypeName::Bool),
             "char" => Ok(TypeName::Char),
             "unit" => Ok(TypeName::Unit),
