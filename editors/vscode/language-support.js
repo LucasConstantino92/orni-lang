@@ -35,7 +35,7 @@ function findVariables(source) {
   return Array.from(source.matchAll(pattern), (match) => ({
     name: match[1],
     typeName: match[2],
-    inferredType: match[2] ? undefined : inferExpressionType(match[3].trim()),
+    inferredType: inferExpressionType(match[3].trim()),
     offset: match.index + match[0].lastIndexOf(match[1]),
   }));
 }
@@ -52,8 +52,100 @@ function inferExpressionType(expression) {
   if (/^'(?:\\[nt'\\]|[^'\r\n])'$/.test(expression)) return "char";
   if (/^(?:true|false)$/.test(expression)) return "bool";
   if (/^-?\d+\.\d+$/.test(expression)) return "double";
-  if (/^-?\d+$/.test(expression)) return "int";
+  if (/^-?\d+$/.test(expression)) return inferIntegerType(expression);
   return undefined;
+}
+
+/** Chooses the smallest signed integer type that safely contains a literal. */
+function inferIntegerType(expression) {
+  try {
+    const value = BigInt(expression);
+    if (value >= -128n && value <= 127n) return "int8";
+    if (value >= -32768n && value <= 32767n) return "int16";
+    if (value >= -2147483648n && value <= 2147483647n) return "int32";
+    return "int";
+  } catch {
+    return undefined;
+  }
+}
+
+/** Finds bounded variable declarations whose string literal does not fit. */
+function findBoundedVariableViolations(source) {
+  const pattern = /\blet\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*string<(\d+)>\s*=\s*("(?:\\.|[^"\\])*")/g;
+  const violations = [];
+  for (const match of source.matchAll(pattern)) {
+    try {
+      const maximum = Number(match[1]);
+      const actual = Buffer.byteLength(JSON.parse(match[2]), "utf8");
+      if (actual > maximum) {
+        const literalOffset = match.index + match[0].lastIndexOf(match[2]);
+        violations.push({
+          offset: literalOffset,
+          length: match[2].length,
+          message: `String value requires ${actual} UTF-8 bytes, but string<${maximum}> allows at most ${maximum}.`,
+        });
+      }
+    } catch {
+      // The compiler reports malformed literals with more precise context.
+    }
+  }
+  return violations;
+}
+
+/** Locates a bounded string annotation on the diagnostic's source line. */
+function findStringCapacityAnnotation(source, offset, capacity) {
+  const lineStart = source.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const nextLine = source.indexOf("\n", offset);
+  const lineEnd = nextLine === -1 ? source.length : nextLine;
+  const line = source.slice(lineStart, lineEnd);
+  const match = line.match(new RegExp(`string\\s*<\\s*${capacity}\\s*>`));
+  if (!match) return undefined;
+  return {
+    offset: lineStart + match.index,
+    length: match[0].length,
+  };
+}
+
+/** Finds string literals that exceed a function parameter's declared capacity. */
+function findBoundedStringViolations(source) {
+  const violations = [];
+  for (const declaration of findFunctions(source)) {
+    const limits = declaration.parameters.map((parameter) => {
+      const match = parameter.match(/^[A-Za-z_][A-Za-z0-9_]*\s*:\s*string<(\d+)>/);
+      return match ? Number(match[1]) : undefined;
+    });
+    if (!limits.some((limit) => limit !== undefined)) continue;
+
+    const calls = new RegExp(`\\b${declaration.name}\\s*\\(([^()]*)\\)`, "g");
+    for (const call of source.matchAll(calls)) {
+      const prefix = source.slice(Math.max(0, call.index - 8), call.index);
+      if (/func\s+$/.test(prefix)) continue;
+
+      const argumentsSource = call[1];
+      const argumentsOffset = call.index + call[0].indexOf(argumentsSource);
+      let searchOffset = 0;
+      for (const [index, rawArgument] of argumentsSource.split(",").entries()) {
+        const argument = rawArgument.trim();
+        const localOffset = argumentsSource.indexOf(argument, searchOffset);
+        searchOffset = localOffset + argument.length;
+        const maximum = limits[index];
+        if (maximum === undefined || !/^"(?:\\.|[^"\\])*"$/.test(argument)) continue;
+        try {
+          const actual = Buffer.byteLength(JSON.parse(argument), "utf8");
+          if (actual > maximum) {
+            violations.push({
+              offset: argumentsOffset + localOffset,
+              length: argument.length,
+              message: `String argument requires ${actual} UTF-8 bytes, but string<${maximum}> allows at most ${maximum}.`,
+            });
+          }
+        } catch {
+          // The compiler reports malformed string literals with better context.
+        }
+      }
+    }
+  }
+  return violations;
 }
 
 /** Returns the closest declaration visible before a symbol use. */
@@ -65,8 +157,12 @@ function findClosestDeclaration(declarations, name, usageOffset) {
 
 module.exports = {
   findClosestDeclaration,
+  findBoundedStringViolations,
+  findBoundedVariableViolations,
   findFunctions,
+  findStringCapacityAnnotation,
   findVariables,
   inferExpressionType,
+  inferIntegerType,
   identifierPattern,
 };

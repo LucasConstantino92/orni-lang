@@ -1,148 +1,305 @@
-# Orni
+<p align="center">
+  <img src="editors/vscode/icons/orni-file.svg" width="140" alt="Orni logo">
+</p>
 
-Orni is an experimental programming language whose name combines the
-platypus with the idea of **Oriented Injection**.
-Its goal is to explore a small language in which application dependencies are
-explicit, easy to replace, and a natural part of the syntax.
+<h1 align="center">Orni</h1>
 
-## Current status
+<p align="center">
+  <strong>A small, safety-oriented programming language built in Rust.</strong>
+</p>
 
-The first milestone is a minimal vertical slice: read an `.orni` file, parse
-its syntax, and execute it. The language currently supports:
+<p align="center">
+  Predictable types, bounded resources, helpful diagnostics, and dependency
+  injection as a future language-level concept.
+</p>
 
-- variables declared with `let`, with optional type annotations;
-- functions with typed parameters, optional defaults, typed return values, and isolated lexical scopes;
-- comparisons with `==`, `!=`, `>`, `>=`, `<`, and `<=`;
-- boolean negation with `!`;
-- `if`/`else` statements and nested block scopes;
-- numbers, strings, and booleans;
-- `print` statements;
-- the `+`, `-`, `*`, and `/` operators;
-- comments starting with `//`;
-- errors containing line and column information.
+<p align="center">
+  <img alt="Status: experimental" src="https://img.shields.io/badge/status-experimental-f59e0b">
+  <img alt="Rust edition 2024" src="https://img.shields.io/badge/Rust-2024-000000?logo=rust">
+  <img alt="Editor support" src="https://img.shields.io/badge/editor-live%20diagnostics-6366f1">
+</p>
 
-The primitive types use lowercase names and have explicit runtime behavior:
+> [!IMPORTANT]
+> Orni is an early-stage language experiment. Its syntax and runtime APIs may
+> change while the core design is being established.
 
-- `int` and `int64` are signed 64-bit integers with checked arithmetic;
-- `int8`, `int16`, and `int32` provide smaller signed ranges;
-- `uint8`, `uint16`, `uint32`, and `uint64` provide unsigned ranges;
-- `double` is a 64-bit floating-point number;
-- `bool` stores `true` or `false`;
-- `char` stores one Unicode scalar value;
-- `string` stores dynamically sized UTF-8 text;
-- `string<N>` limits text to at most `N` UTF-8 bytes;
-- `unit` represents the absence of a value.
+## Why Orni?
 
-All integer conversions and same-width arithmetic are range checked. Bounded
-strings are inferred from literals, so `let name = "Orni";` becomes
-`string<4>` without an annotation. Bounded collections are planned next;
-integer width alone does not prevent memory leaks.
+Orni explores what a server-oriented language can look like when safe defaults
+are concise instead of verbose. The name combines the platypus with the idea of
+**Oriented Injection**: application dependencies should eventually be explicit,
+replaceable, and natural to express in source code.
+
+The current foundation focuses on:
+
+- automatic string-capacity and integer-width inference;
+- optional explicit bounds for public contracts and untrusted input;
+- checked arithmetic and conversions;
+- lexical scopes backed by Rust ownership;
+- configurable runtime resource limits;
+- useful errors with source line and column information;
+- first-class editor support for `.orni` files.
+
+## A first Orni program
 
 ```orni
-let name: string = "Orni";
-func greet(subject: string, greeting: string = "Hello") -> string {
-    return greeting + ", " + subject;
+/// Creates a greeting with capacities inferred for each call.
+func greet(name: string, greeting: string = "Hello") -> string {
+    return greeting + ", " + name;
 }
 
-print greet(name);
-print 6 * 7;
+let project = "Orni"; // inferred as string<4>
+let answer = 6 * 7;   // inferred integer storage
+
+print greet(project);
+print answer;
 ```
 
-## Playground
+Output:
 
-Open any `.orni` file and press `Ctrl+Shift+B` in a compatible editor such as
-Antigravity, Visual Studio Code, or Cursor. The default build task runs the
-active file through the Orni interpreter. The separate `Orni: Run playground`
-task always runs `playground/main.orni`.
-
-You can also run it from a terminal:
-
-```sh
-cargo run --target wasm32-wasip1 -- playground/main.orni
+```text
+Hello, Orni
+42
 ```
 
-Validate a file without executing it with:
+## Language features
 
-```sh
-cargo run --target wasm32-wasip1 -- --check playground/main.orni
+- Variables declared with `let` and optional type annotations
+- Functions with typed parameters, defaults, return values, and isolated scopes
+- Call-site inference for automatic string parameters and returns
+- `if`/`else` statements and nested blocks
+- Comparisons, boolean negation, and arithmetic operators
+- UTF-8 strings, Unicode characters, booleans, integers, and doubles
+- Documentation comments written with `///`
+- Checked overflow, division-by-zero detection, and bounded execution
+
+### Primitive types
+
+| Type | Behavior |
+| --- | --- |
+| `string` | UTF-8 string whose capacity is inferred |
+| `string<N>` | UTF-8 string with an explicit maximum of `N` bytes |
+| `int` / `int64` | Signed 64-bit integer with checked arithmetic |
+| `int8`, `int16`, `int32` | Smaller signed integer ranges |
+| `uint8`, `uint16`, `uint32`, `uint64` | Explicit unsigned integer ranges |
+| `double` | 64-bit floating-point number |
+| `bool` | `true` or `false` |
+| `char` | One Unicode scalar value |
+| `unit` | Absence of a reusable value |
+
+## Smart inference, explicit control
+
+Orni chooses compact types when it has enough information:
+
+```orni
+let name = "Orni";            // string<4>
+let status: string = "Ready"; // string<5>
+let retries = 3;              // int8
+let port = 8080;              // int16
+let users = 250000;           // int32
+let distance = 9000000000;    // int
 ```
 
-Editor integrations can validate unsaved source through standard input:
+Bare `string` parameters and returns are specialized at each call site. The
+compiler propagates argument and default capacities through the function body:
 
-```sh
-Get-Content playground/main.orni | cargo run --target wasm32-wasip1 -- --check-stdin
+```orni
+func greet(name: string, greeting: string = "Hello") -> string {
+    return greeting + ", " + name;
+}
+
+let first: string<11> = greet("Orni");
+let second: string<13> = greet("Orni", "Welcome");
 ```
 
-The development runner uses WASI so contributors can execute Orni without a
-platform-specific native linker. It requires the Rust `wasm32-wasip1` target
-and Node.js. Install the target once with:
+Inference is optional. Use `string<N>` whenever an API must enforce a maximum:
+
+```orni
+func normalize_username(value: string<32>) -> string<32> {
+    return value;
+}
+```
+
+## Resource safety
+
+Orni uses the host runtime's Rust ownership model. Local bindings are released
+when their block or function ends, and immutable strings are reference-counted
+so variable lookups and function arguments do not repeatedly copy their data.
+String concatenation calculates its final UTF-8 size first and performs one
+allocation.
+
+Default runtime boundaries protect applications from runaway resource use:
+
+| Resource | Default limit |
+| --- | ---: |
+| One generated string | 1 MiB |
+| Strings retained by active variables | 8 MiB |
+| Captured program output | 1 MiB |
+| Simultaneously active variables | 10,000 |
+| Function call depth | 128 |
+| Evaluated operations | 100,000 |
+
+Applications embedding Orni can apply stricter boundaries through the public
+`run_with_limits` Rust API. These protections limit resource exhaustion; real
+production workloads should still be measured and profiled.
+
+## Quick start
+
+### Requirements
+
+- [Rust](https://www.rust-lang.org/tools/install)
+- Node.js, used by the WASI development runner
+- The Rust `wasm32-wasip1` target
+
+Install the target once:
 
 ```sh
 rustup target add wasm32-wasip1
 ```
 
-The `examples` directory preserves the language's learning path:
-
-1. `01_basics.orni` introduces values, variables, and arithmetic.
-2. `02_functions.orni` introduces functions and return values.
-3. `03_conditionals.orni` introduces comparisons, branches, and block scopes.
-4. `04_type_safety.orni` demonstrates bounded strings, fixed-width integers,
-   type inference, optional parameters, and documented function signatures.
-
-## Visual Studio Code support
-
-The extension source under `editors/vscode` registers `.orni` files, provides
-light and dark Orni file icons, syntax highlighting, comment toggling, bracket
-matching, automatic closing pairs, and indentation rules.
-
-Run the example with:
+Run the playground:
 
 ```sh
-cargo run -- examples/hello.orni
+cargo run --target wasm32-wasip1 -- playground/main.orni
 ```
 
-Run the test suite with:
+Run one of the guided examples:
+
+```sh
+cargo run --target wasm32-wasip1 -- examples/04_type_safety.orni
+```
+
+Validate a program without executing it:
+
+```sh
+cargo run --target wasm32-wasip1 -- --check playground/main.orni
+```
+
+## Examples
+
+| Example | What it demonstrates |
+| --- | --- |
+| [`01_basics.orni`](examples/01_basics.orni) | Values, variables, printing, and arithmetic |
+| [`02_functions.orni`](examples/02_functions.orni) | Functions, parameters, and return values |
+| [`03_conditionals.orni`](examples/03_conditionals.orni) | Comparisons, branches, and block scopes |
+| [`04_type_safety.orni`](examples/04_type_safety.orni) | Inference, bounded types, defaults, and documentation |
+
+### Learn from failures
+
+The [`examples/errors`](examples/errors) directory contains intentionally
+invalid programs. Each file demonstrates one focused diagnostic:
+
+- undefined variables;
+- incompatible types;
+- exceeded string contracts;
+- integer overflow;
+- division by zero;
+- excessive recursion;
+- runaway string growth.
+
+Run one and inspect the compiler or runtime message:
+
+```sh
+cargo run --target wasm32-wasip1 -- examples/errors/03_string_contract.orni
+```
+
+An error exit status is expected for these examples.
+
+## Editor experience
+
+The extension in [`editors/vscode`](editors/vscode) supports Antigravity,
+Visual Studio Code, and compatible editors. It currently provides:
+
+- Orni icons for `.orni` files;
+- syntax highlighting and language-aware indentation;
+- live diagnostics before execution;
+- context-aware Quick Fix actions through `Ctrl+.`;
+- unused-variable warnings;
+- hover documentation and inferred type information;
+- function signature help;
+- Ctrl+Click navigation to declarations;
+- Ctrl+Click navigation from language built-ins to their Rust implementation.
+
+Package the local extension:
+
+```sh
+cd editors/vscode
+npx @vscode/vsce package --allow-missing-repository
+```
+
+Install the generated `.vsix` using your editor's **Install from VSIX** command,
+then reload the editor window.
+
+## Development
+
+Run the complete Rust test suite:
 
 ```sh
 cargo test --target wasm32-wasip1
 ```
 
-## Documentation
+Run the editor support tests:
 
-Public APIs use Rust documentation comments (`///`). The crate enables
-`missing_docs` warnings so newly exposed APIs are not left undocumented.
-Generate documentation for both public and internal items with:
+```sh
+node --test editors/vscode/test/language-support.test.js
+```
+
+Require warning-free Rust code:
+
+```sh
+cargo clippy --all-targets --target wasm32-wasip1 -- -D warnings
+```
+
+Generate internal and public Rust documentation:
 
 ```sh
 cargo doc --no-deps --document-private-items --open
 ```
 
-Editors powered by rust-analyzer display these comments on hover and navigate
-to the documented declaration with Ctrl+Click.
+All public Rust APIs use `///` documentation comments, and the crate enables
+`missing_docs` warnings to keep newly exposed APIs documented.
 
-## Source layout
+## Architecture
 
-- `src/frontend` contains lexing, parsing, and semantic type checking;
-- `src/syntax` contains tokens and abstract syntax tree nodes;
-- `src/runtime` contains execution state and the interpreter;
-- `src/diagnostics.rs` defines errors shared by every stage;
-- `src/lib.rs` connects the complete source-to-execution pipeline.
+```text
+Orni source (.orni)
+        │
+        ▼
+      Lexer ──► Parser ──► Type checker ──► Interpreter
+        │          │              │               │
+      Tokens      AST       Diagnostics      Program output
+```
+
+| Path | Responsibility |
+| --- | --- |
+| `src/frontend` | Lexing, parsing, and semantic type checking |
+| `src/syntax` | Tokens, values, and abstract syntax tree nodes |
+| `src/runtime` | Environments, resource limits, and interpretation |
+| `src/diagnostics.rs` | Errors shared by every compilation stage |
+| `src/lib.rs` | Public checking and execution pipeline |
+| `editors/vscode` | `.orni` editor integration |
 
 ## Roadmap
 
-1. Define the minimum syntax for modules, contracts, providers, and injection.
-2. Add conditional execution and nested blocks.
-3. Build Orni's first dependency injection container.
-4. Expose PostgreSQL through an explicit adapter while keeping SQL visible.
-5. Extend the CLI with `orni run`, `orni check`, and richer diagnostics.
+- [x] Lexer, parser, semantic checker, and interpreter
+- [x] Functions, defaults, returns, conditionals, and lexical scopes
+- [x] Fixed-width integers and bounded UTF-8 strings
+- [x] Smart literal and function-call string inference
+- [x] Live editor diagnostics, hover information, and navigation
+- [x] Runtime memory, recursion, output, and execution-fuel boundaries
+- [ ] Modules and imports
+- [ ] Contracts, providers, and dependency injection syntax
+- [ ] Standard-library adapter model
+- [ ] PostgreSQL adapter with visible, explicit SQL
+- [ ] Production CLI with `orni run`, `orni check`, and richer diagnostics
+- [ ] Benchmarks and memory telemetry
 
-PostgreSQL will not be part of the interpreter core. It will be an adapter in
-the standard library. This separation keeps the language small, allows the
-database to be replaced in tests, and does not hide SQL from the program.
+PostgreSQL will remain outside the interpreter core. It is planned as an
+adapter so applications can replace it during tests without hiding SQL from
+the program.
 
 ## Contributing
 
-Orni is at an early experimental stage. The public language design has not
-stabilized yet, so discussions and small, focused changes are preferred.
-Code, documentation, commit messages, and public project communication should
-be written in English.
+Orni is still defining its public language design. Discussions and small,
+focused changes are welcome. Code, documentation, commit messages, and public
+project communication should be written in English.

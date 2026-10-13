@@ -1,0 +1,6 @@
+// Expected: Runtime error before recursive string growth exhausts memory.
+func grow(value: string) -> string {
+    return grow(value + value);
+}
+
+print grow("x");

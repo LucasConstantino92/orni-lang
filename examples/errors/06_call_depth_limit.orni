@@ -1,0 +1,6 @@
+// Expected: Runtime error when recursion reaches the configured call limit.
+func recurse(depth: int) -> int {
+    return recurse(depth + 1);
+}
+
+print recurse(0);

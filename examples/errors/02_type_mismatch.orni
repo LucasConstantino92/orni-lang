@@ -1,0 +1,3 @@
+// Expected: Semantic error because a string cannot initialize a bool.
+let enabled: bool = "yes";
+print enabled;

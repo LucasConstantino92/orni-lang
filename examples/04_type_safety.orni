@@ -1,13 +1,13 @@
 // Stage 4: bounded values, inference, and documented function signatures.
 
-/// Creates a greeting while preserving a predictable maximum allocation.
+/// Creates a greeting with capacities inferred independently for every call.
 /// The greeting argument is optional and defaults to "Hello".
-func greet(name: string<32>, greeting: string<16> = "Hello") -> string<64> {
+func greet(name: string, greeting: string = "Hello") -> string {
     return greeting + ", " + name;
 }
 
 /// Describes whether a service is healthy.
-func service_status(service: string<32>, healthy: bool) -> string<64> {
+func service_status(service: string, healthy: bool) -> string {
     if healthy {
         return service + " is healthy";
     } else {
@@ -44,15 +44,35 @@ func is_separator(value: char) -> bool {
 }
 
 /// Prints a bounded message and intentionally returns unit.
-func announce(message: string<64>) -> unit {
+func announce(message: string) -> unit {
     print message;
 }
 
+/// Builds a message while letting Orni infer the local string allocation.
+func inferred_welcome(name: string) -> string {
+    let prefix = "Welcome, ";
+    return prefix + name;
+}
+
+// Hover these variables to inspect their compiler-inferred limits.
 let project = "Orni";
+let status: string = "Ready";
+let unicode_status = "Olá, Orni!";
+let retries = 3;
+let port = 8080;
+let users = 250000;
+let distance = 9000000000;
 let load = 0.85;
 
 print greet(project);
 print greet(project, "Welcome");
+print inferred_welcome(project);
+print status;
+print unicode_status;
+print retries;
+print port;
+print users;
+print distance;
 print service_status("api", true);
 print is_http_port(8080);
 print recommended_workers(load);

@@ -1,0 +1,2 @@
+// Expected: Semantic error reporting an undefined variable.
+print missing_value;

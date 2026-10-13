@@ -2,7 +2,10 @@ const vscode = require("vscode");
 const { spawn } = require("node:child_process");
 const {
   findClosestDeclaration,
+  findBoundedStringViolations,
+  findBoundedVariableViolations,
   findFunctions,
+  findStringCapacityAnnotation,
   findVariables,
   identifierPattern,
 } = require("./language-support");
@@ -22,7 +25,7 @@ const builtins = {
 const backendSymbols = {
   print: {
     path: ["src", "runtime", "interpreter.rs"],
-    needle: "Statement::Print(expression) => {",
+    needle: "Statement::Print {",
   },
   func: {
     path: ["src", "runtime", "interpreter.rs"],
@@ -127,17 +130,31 @@ function hoverFor(document, position) {
     if (functionDeclaration.documentation) {
       markdown.appendMarkdown(`\n${functionDeclaration.documentation}`);
     }
+    const hasAutomaticString =
+      functionDeclaration.returnType === "string" ||
+      functionDeclaration.parameters.some((parameter) => /:\s*string(?:\s*=|$)/.test(parameter));
+    if (hasAutomaticString) {
+      markdown.appendMarkdown(
+        "\n\nBare `string` capacities are inferred from arguments, defaults, and the function body for each call.",
+      );
+    }
     return new vscode.Hover(markdown, symbol.range);
   }
 
   const variable = findClosestDeclaration(findVariables(source), symbol.name, usageOffset);
   if (variable) {
     const markdown = new vscode.MarkdownString();
-    const resolvedType = variable.typeName || variable.inferredType;
+    const inferredBareString =
+      variable.typeName === "string" && variable.inferredType?.startsWith("string<");
+    const resolvedType = inferredBareString
+      ? variable.inferredType
+      : variable.typeName || variable.inferredType;
     const annotation = resolvedType ? `: ${resolvedType}` : "";
     markdown.appendCodeblock(`let ${variable.name}${annotation}`, "orni");
     markdown.appendMarkdown(
-      variable.typeName
+      inferredBareString
+        ? `\nDeclared as \`string\`; Orni inferred the allocation limit as \`${resolvedType}\` from the assigned value.`
+        : variable.typeName
         ? `\nVariable explicitly declared as \`${variable.typeName}\`.`
         : resolvedType
           ? `\nInferred by Orni from the assigned value. No annotation is required.`
@@ -189,19 +206,23 @@ function diagnosticFromCompiler(document, output) {
   const lineText = document.lineAt(line).text;
   const column = Math.min(Number(match[2]) - 1, lineText.length);
   const end = Math.min(column + 1, lineText.length);
-  return [
-    new vscode.Diagnostic(
-      new vscode.Range(line, column, line, end),
-      match[3],
-      vscode.DiagnosticSeverity.Error,
-    ),
-  ];
+  const diagnostic = new vscode.Diagnostic(
+    new vscode.Range(line, column, line, end),
+    match[3],
+    vscode.DiagnosticSeverity.Error,
+  );
+  diagnostic.source = "Orni compiler";
+  if (/expects string<\d+>, but found string<\d+>/.test(match[3])) {
+    diagnostic.code = "orni.stringCapacity";
+  }
+  return [diagnostic];
 }
 
 /** Produces fast non-blocking warnings without invoking the compiler. */
 function lintDiagnostics(document) {
   const source = document.getText();
-  return findVariables(source).flatMap((variable) => {
+  const unusedVariables = findVariables(source).flatMap((variable) => {
+    if (variable.name.startsWith("_")) return [];
     const uses = source.match(new RegExp(`\\b${variable.name}\\b`, "g")) || [];
     if (uses.length > 1) return [];
     const start = document.positionAt(variable.offset);
@@ -211,13 +232,100 @@ function lintDiagnostics(document) {
       vscode.DiagnosticSeverity.Warning,
     );
     diagnostic.source = "Orni lint";
+    diagnostic.code = "orni.unusedVariable";
     return [diagnostic];
   });
+  const boundedStrings = findBoundedStringViolations(source).map((violation) => {
+    const start = document.positionAt(violation.offset);
+    const end = document.positionAt(violation.offset + violation.length);
+    const diagnostic = new vscode.Diagnostic(
+      new vscode.Range(start, end),
+      violation.message,
+      vscode.DiagnosticSeverity.Error,
+    );
+    diagnostic.source = "Orni lint";
+    diagnostic.code = "orni.stringCapacity";
+    return diagnostic;
+  });
+  const boundedVariables = findBoundedVariableViolations(source).map((violation) => {
+    const start = document.positionAt(violation.offset);
+    const end = document.positionAt(violation.offset + violation.length);
+    const diagnostic = new vscode.Diagnostic(
+      new vscode.Range(start, end),
+      violation.message,
+      vscode.DiagnosticSeverity.Error,
+    );
+    diagnostic.source = "Orni lint";
+    diagnostic.code = "orni.stringCapacity";
+    return diagnostic;
+  });
+  return [...boundedVariables, ...boundedStrings, ...unusedVariables];
+}
+
+/** Creates context-aware fixes shown by the editor's Ctrl+. menu. */
+function codeActionsFor(document, context) {
+  const actions = [];
+  const source = document.getText();
+
+  for (const diagnostic of context.diagnostics) {
+    if (diagnostic.code === "orni.stringCapacity") {
+      const capacities = diagnostic.message.match(
+        /(?:expects string<(\d+)>, but found string<(\d+)>|requires (\d+) UTF-8 bytes, but string<(\d+)>)/,
+      );
+      if (!capacities) continue;
+      const maximum = capacities[1] || capacities[4];
+      const actual = capacities[2] || capacities[3];
+      const diagnosticOffset = document.offsetAt(diagnostic.range.start);
+      const annotation = findStringCapacityAnnotation(source, diagnosticOffset, maximum);
+      if (!annotation) continue;
+      const annotationRange = new vscode.Range(
+        document.positionAt(annotation.offset),
+        document.positionAt(annotation.offset + annotation.length),
+      );
+
+      const increase = new vscode.CodeAction(
+        `Increase string capacity to ${actual} bytes`,
+        vscode.CodeActionKind.QuickFix,
+      );
+      increase.edit = new vscode.WorkspaceEdit();
+      increase.edit.replace(document.uri, annotationRange, `string<${actual}>`);
+      increase.diagnostics = [diagnostic];
+      increase.isPreferred = true;
+      actions.push(increase);
+
+      const infer = new vscode.CodeAction(
+        "Use automatic string capacity inference",
+        vscode.CodeActionKind.QuickFix,
+      );
+      infer.edit = new vscode.WorkspaceEdit();
+      infer.edit.replace(document.uri, annotationRange, "string");
+      infer.diagnostics = [diagnostic];
+      actions.push(infer);
+    }
+
+    if (diagnostic.code === "orni.unusedVariable") {
+      const name = document.getText(diagnostic.range);
+      if (name.startsWith("_")) continue;
+      const prefix = new vscode.CodeAction(
+        `Mark '${name}' as intentionally unused`,
+        vscode.CodeActionKind.QuickFix,
+      );
+      prefix.edit = new vscode.WorkspaceEdit();
+      prefix.edit.replace(document.uri, diagnostic.range, `_${name}`);
+      prefix.diagnostics = [diagnostic];
+      prefix.isPreferred = true;
+      actions.push(prefix);
+    }
+  }
+
+  return actions;
 }
 
 /** Checks the current in-memory source without executing its program. */
 function updateDiagnostics(document, diagnostics) {
   if (document.languageId !== "orni") return;
+  const localDiagnostics = lintDiagnostics(document);
+  diagnostics.set(document.uri, localDiagnostics);
   const folder = vscode.workspace.getWorkspaceFolder(document.uri);
   if (!folder) return;
 
@@ -232,14 +340,23 @@ function updateDiagnostics(document, diagnostics) {
   let output = "";
   process.stdout.on("data", (chunk) => (output += chunk));
   process.stderr.on("data", (chunk) => (output += chunk));
+  process.on("error", () => {
+    if (diagnosticProcesses.get(key) !== process) return;
+    diagnosticProcesses.delete(key);
+    diagnostics.set(document.uri, localDiagnostics);
+  });
   process.on("close", (code) => {
     if (diagnosticProcesses.get(key) !== process) return;
     diagnosticProcesses.delete(key);
     const compilerDiagnostics = code === 0 ? [] : diagnosticFromCompiler(document, output);
-    diagnostics.set(
-      document.uri,
-      compilerDiagnostics.length > 0 ? compilerDiagnostics : lintDiagnostics(document),
+    const compilerOnly = compilerDiagnostics.filter(
+      (compilerDiagnostic) =>
+        !localDiagnostics.some(
+          (localDiagnostic) =>
+            localDiagnostic.code && localDiagnostic.code === compilerDiagnostic.code,
+        ),
     );
+    diagnostics.set(document.uri, [...compilerOnly, ...localDiagnostics]);
   });
   process.stdin.end(document.getText());
 }
@@ -288,6 +405,11 @@ function activate(context) {
     vscode.languages.registerDefinitionProvider(selector, {
       provideDefinition: definitionFor,
     }),
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      { provideCodeActions: (_document, _range, context) => codeActionsFor(_document, context) },
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] },
+    ),
     vscode.languages.registerSignatureHelpProvider(
       selector,
       { provideSignatureHelp: signatureHelpFor },

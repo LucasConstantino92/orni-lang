@@ -11,8 +11,9 @@ use crate::{
 /// The type information required to validate a function call.
 #[derive(Clone)]
 struct FunctionSignature {
-    parameters: Vec<(TypeName, bool)>,
+    parameters: Vec<crate::syntax::Parameter>,
     return_type: TypeName,
+    body: Vec<Statement>,
 }
 
 /// Validates types and names before the interpreter executes a program.
@@ -20,6 +21,8 @@ pub(crate) struct TypeChecker {
     scopes: Vec<HashMap<String, TypeName>>,
     functions: HashMap<String, FunctionSignature>,
     current_return_type: Option<TypeName>,
+    inferred_return_type: Option<TypeName>,
+    inference_stack: Vec<String>,
 }
 
 impl TypeChecker {
@@ -29,6 +32,8 @@ impl TypeChecker {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             current_return_type: None,
+            inferred_return_type: None,
+            inference_stack: Vec::new(),
         }
     }
 

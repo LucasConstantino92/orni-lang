@@ -63,6 +63,28 @@ impl Environment {
             .insert(name, value);
     }
 
+    /// Finds a binding in the innermost scope only.
+    pub fn current_value(&self, name: &str) -> Option<&Value> {
+        self.scopes.last().and_then(|scope| scope.get(name))
+    }
+
+    /// Counts bindings that are currently retained by active scopes.
+    pub fn binding_count(&self) -> usize {
+        self.scopes.iter().map(HashMap::len).sum()
+    }
+
+    /// Counts string bytes conservatively across all active bindings.
+    pub fn retained_string_bytes(&self) -> usize {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::values)
+            .map(|value| match value {
+                Value::String(value) => value.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
     /// Finds a variable in the active function scope or the global scope.
     pub fn get(&self, name: &str) -> Option<&Value> {
         let boundary = self.function_boundaries.last().copied().unwrap_or(0);

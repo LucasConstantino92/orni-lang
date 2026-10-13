@@ -126,10 +126,10 @@ impl Parser {
         match token.kind.clone() {
             TokenKind::Int(value) => Ok(Expression::Literal(Value::Integer {
                 value,
-                integer_type: IntegerType::Int64,
+                integer_type: IntegerType::smallest_signed(value),
             })),
             TokenKind::Double(value) => Ok(Expression::Literal(Value::Double(value))),
-            TokenKind::String(value) => Ok(Expression::Literal(Value::String(value))),
+            TokenKind::String(value) => Ok(Expression::Literal(Value::String(value.into()))),
             TokenKind::Char(value) => Ok(Expression::Literal(Value::Char(value))),
             TokenKind::True => Ok(Expression::Literal(Value::Bool(true))),
             TokenKind::False => Ok(Expression::Literal(Value::Bool(false))),

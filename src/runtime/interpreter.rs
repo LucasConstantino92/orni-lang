@@ -5,6 +5,7 @@ use crate::{
     syntax::{Expression, IntegerType, Parameter, Statement, Token, TokenKind, TypeName, Value},
 };
 
+use super::ExecutionLimits;
 use super::environment::Environment;
 
 #[derive(Clone)]
@@ -28,15 +29,21 @@ pub(crate) struct Interpreter {
     environment: Environment,
     functions: HashMap<String, Function>,
     output: String,
+    limits: ExecutionLimits,
+    call_depth: usize,
+    operations: usize,
 }
 
 impl Interpreter {
     /// Creates an interpreter with empty global state and output.
-    pub fn new() -> Self {
+    pub fn new(limits: ExecutionLimits) -> Self {
         Self {
             environment: Environment::new(),
             functions: HashMap::new(),
             output: String::new(),
+            limits,
+            call_depth: 0,
+            operations: 0,
         }
     }
 
@@ -73,6 +80,9 @@ impl Interpreter {
 
     /// Executes one statement and updates interpreter state when necessary.
     fn execute_statement(&mut self, statement: &Statement) -> Result<ExecutionFlow, OrniError> {
+        if let Some(token) = statement_token(statement) {
+            self.consume_operation(token)?;
+        }
         match statement {
             Statement::Let {
                 name,
@@ -81,7 +91,7 @@ impl Interpreter {
             } => {
                 let identifier = identifier_name(name);
                 let value = coerce_value(self.evaluate(value)?, *declared_type, name)?;
-                self.environment.define(identifier.to_owned(), value);
+                self.define_variable(identifier, value, name)?;
             }
             Statement::Function {
                 name,
@@ -98,9 +108,28 @@ impl Interpreter {
                     },
                 );
             }
-            Statement::Print(expression) => {
+            Statement::Print {
+                keyword,
+                expression,
+            } => {
                 let value = self.evaluate(expression)?;
-                self.output.push_str(&value.to_string());
+                let rendered = value.to_string();
+                let next_length = self
+                    .output
+                    .len()
+                    .checked_add(rendered.len())
+                    .and_then(|length| length.checked_add(1))
+                    .ok_or_else(|| runtime_error(keyword, "output size overflow"))?;
+                if next_length > self.limits.max_output_bytes {
+                    return Err(runtime_error(
+                        keyword,
+                        &format!(
+                            "output exceeds the configured limit of {} UTF-8 byte(s)",
+                            self.limits.max_output_bytes
+                        ),
+                    ));
+                }
+                self.output.push_str(&rendered);
                 self.output.push('\n');
             }
             Statement::Return { keyword, value } => {
@@ -140,6 +169,9 @@ impl Interpreter {
 
     /// Evaluates one expression into a runtime value.
     fn evaluate(&mut self, expression: &Expression) -> Result<Value, OrniError> {
+        if let Some(token) = expression_token(expression) {
+            self.consume_operation(token)?;
+        }
         match expression {
             Expression::Literal(value) => Ok(value.clone()),
             Expression::Grouping(expression) => self.evaluate(expression),
@@ -205,6 +237,15 @@ impl Interpreter {
             ));
         };
         let name = identifier_name(name_token);
+        if self.call_depth >= self.limits.max_call_depth {
+            return Err(runtime_error(
+                name_token,
+                &format!(
+                    "function call depth exceeds the configured limit of {}",
+                    self.limits.max_call_depth
+                ),
+            ));
+        }
         let function = self.functions.get(name).cloned().ok_or_else(|| {
             OrniError::runtime(
                 name_token.line,
@@ -241,12 +282,14 @@ impl Interpreter {
             .map(|argument| self.evaluate(argument))
             .collect::<Result<Vec<_>, _>>()?;
 
+        self.call_depth += 1;
         self.environment.enter_function_scope();
         let result = self
             .bind_parameters(&function.parameters, values)
             .and_then(|()| self.execute_function_body(&function.body))
             .and_then(|value| coerce_value(value, Some(function.return_type), closing_parenthesis));
         self.environment.exit_function_scope();
+        self.call_depth -= 1;
         result
     }
 
@@ -268,8 +311,7 @@ impl Interpreter {
                 )?,
             };
             let value = coerce_value(value, Some(parameter.type_name), &parameter.name)?;
-            self.environment
-                .define(identifier_name(&parameter.name).to_owned(), value);
+            self.define_variable(identifier_name(&parameter.name), value, &parameter.name)?;
         }
         Ok(())
     }
@@ -307,11 +349,14 @@ impl Interpreter {
     /// Applies a binary operator to two already evaluated operands.
     fn binary(&self, left: Value, operator: &Token, right: Value) -> Result<Value, OrniError> {
         match (&operator.kind, left, right) {
+            (TokenKind::Plus, Value::String(left), Value::String(right)) => {
+                self.concatenate(&left, &right, operator)
+            }
             (TokenKind::Plus, Value::String(left), right) => {
-                Ok(Value::String(left + &right.to_string()))
+                self.concatenate(&left, &right.to_string(), operator)
             }
             (TokenKind::Plus, left, Value::String(right)) => {
-                Ok(Value::String(left.to_string() + &right))
+                self.concatenate(&left.to_string(), &right, operator)
             }
             (
                 _,
@@ -352,6 +397,100 @@ impl Interpreter {
             )),
             _ => unreachable!("binary operator validated by the parser"),
         }
+    }
+
+    /// Allocates a concatenated string once and enforces its configured limit.
+    fn concatenate(&self, left: &str, right: &str, token: &Token) -> Result<Value, OrniError> {
+        let length = left
+            .len()
+            .checked_add(right.len())
+            .ok_or_else(|| runtime_error(token, "string size overflow"))?;
+        if length > self.limits.max_string_bytes {
+            return Err(runtime_error(
+                token,
+                &format!(
+                    "string requires {length} UTF-8 byte(s), but the runtime limit is {}",
+                    self.limits.max_string_bytes
+                ),
+            ));
+        }
+
+        let mut combined = String::with_capacity(length);
+        combined.push_str(left);
+        combined.push_str(right);
+        Ok(Value::String(combined.into()))
+    }
+
+    /// Retains a variable only when the active environment has capacity.
+    fn define_variable(
+        &mut self,
+        name: &str,
+        value: Value,
+        token: &Token,
+    ) -> Result<(), OrniError> {
+        let replaces_existing = self.environment.current_value(name).is_some();
+        if !replaces_existing && self.environment.binding_count() >= self.limits.max_variables {
+            return Err(runtime_error(
+                token,
+                &format!(
+                    "variable count exceeds the configured limit of {}",
+                    self.limits.max_variables
+                ),
+            ));
+        }
+
+        let value_bytes = match &value {
+            Value::String(value) => value.len(),
+            _ => 0,
+        };
+        if value_bytes > self.limits.max_string_bytes {
+            return Err(runtime_error(
+                token,
+                &format!(
+                    "string requires {value_bytes} UTF-8 byte(s), but the runtime limit is {}",
+                    self.limits.max_string_bytes
+                ),
+            ));
+        }
+        let replaced_bytes =
+            self.environment
+                .current_value(name)
+                .map_or(0, |existing| match existing {
+                    Value::String(value) => value.len(),
+                    _ => 0,
+                });
+        let retained_bytes = self
+            .environment
+            .retained_string_bytes()
+            .saturating_sub(replaced_bytes)
+            .checked_add(value_bytes)
+            .ok_or_else(|| runtime_error(token, "retained string size overflow"))?;
+        if retained_bytes > self.limits.max_retained_string_bytes {
+            return Err(runtime_error(
+                token,
+                &format!(
+                    "retained strings exceed the configured limit of {} UTF-8 byte(s)",
+                    self.limits.max_retained_string_bytes
+                ),
+            ));
+        }
+        self.environment.define(name.to_owned(), value);
+        Ok(())
+    }
+
+    /// Consumes one unit of execution fuel before performing an operation.
+    fn consume_operation(&mut self, token: &Token) -> Result<(), OrniError> {
+        if self.operations >= self.limits.max_operations {
+            return Err(runtime_error(
+                token,
+                &format!(
+                    "execution exceeds the configured limit of {} operation(s)",
+                    self.limits.max_operations
+                ),
+            ));
+        }
+        self.operations += 1;
+        Ok(())
     }
 
     /// Applies a checked operation to two integer operands.
@@ -405,6 +544,31 @@ impl Interpreter {
             TokenKind::BangEqual => Ok(Value::Bool(left != right)),
             _ => unreachable!("operator validated for numeric operands"),
         }
+    }
+}
+
+/// Finds the source token representing a statement-level operation.
+fn statement_token(statement: &Statement) -> Option<&Token> {
+    match statement {
+        Statement::Let { name, .. } | Statement::Function { name, .. } => Some(name),
+        Statement::Print { keyword, .. }
+        | Statement::Return { keyword, .. }
+        | Statement::If { keyword, .. } => Some(keyword),
+        Statement::Block(_) | Statement::Expression(_) => None,
+    }
+}
+
+/// Finds the source token representing an expression-level operation.
+fn expression_token(expression: &Expression) -> Option<&Token> {
+    match expression {
+        Expression::Variable(token) => Some(token),
+        Expression::Unary { operator, .. } | Expression::Binary { operator, .. } => Some(operator),
+        Expression::Call {
+            closing_parenthesis,
+            ..
+        } => Some(closing_parenthesis),
+        Expression::Grouping(expression) => expression_token(expression),
+        Expression::Literal(_) => None,
     }
 }
 

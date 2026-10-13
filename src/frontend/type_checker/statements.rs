@@ -15,6 +15,7 @@ impl TypeChecker {
                 name,
                 parameters,
                 return_type,
+                body,
                 ..
             } = statement
             {
@@ -28,13 +29,9 @@ impl TypeChecker {
                 self.functions.insert(
                     function_name.to_owned(),
                     FunctionSignature {
-                        parameters: parameters
-                            .iter()
-                            .map(|parameter| {
-                                (parameter.type_name, parameter.default_value.is_some())
-                            })
-                            .collect(),
+                        parameters: parameters.clone(),
                         return_type: *return_type,
+                        body: body.clone(),
                     },
                 );
             }
@@ -54,7 +51,12 @@ impl TypeChecker {
                 if let Some(declared_type) = declared_type {
                     self.require_type(name, *declared_type, value_type, "variable value")?;
                 }
-                self.define(identifier_name(name), declared_type.unwrap_or(value_type));
+                let variable_type = match (*declared_type, value_type) {
+                    (Some(TypeName::String(None)), TypeName::String(Some(_))) => value_type,
+                    (Some(declared_type), _) => declared_type,
+                    (None, _) => value_type,
+                };
+                self.define(identifier_name(name), variable_type);
             }
             Statement::Function {
                 name,
@@ -62,7 +64,7 @@ impl TypeChecker {
                 return_type,
                 body,
             } => self.check_function(name, parameters, *return_type, body)?,
-            Statement::Print(expression) | Statement::Expression(expression) => {
+            Statement::Print { expression, .. } | Statement::Expression(expression) => {
                 self.expression_type(expression)?;
             }
             Statement::Return { keyword, value } => {
@@ -78,6 +80,9 @@ impl TypeChecker {
                     .transpose()?
                     .unwrap_or(TypeName::Unit);
                 self.require_type(keyword, expected, actual, "return value")?;
+                if expected == TypeName::String(None) {
+                    self.record_inferred_string_return(actual);
+                }
             }
             Statement::If {
                 keyword,
@@ -103,7 +108,7 @@ impl TypeChecker {
     }
 
     /// Checks a sequence of statements in its current scope.
-    fn check_statements(&mut self, statements: &[Statement]) -> Result<(), OrniError> {
+    pub(super) fn check_statements(&mut self, statements: &[Statement]) -> Result<(), OrniError> {
         for statement in statements {
             self.check_statement(statement)?;
         }
@@ -119,6 +124,7 @@ impl TypeChecker {
         body: &[Statement],
     ) -> Result<(), OrniError> {
         let previous_return_type = self.current_return_type.replace(return_type);
+        let previous_inferred_return_type = self.inferred_return_type.take();
         self.scopes.push(HashMap::new());
 
         let result = (|| {
@@ -149,6 +155,21 @@ impl TypeChecker {
 
         self.scopes.pop();
         self.current_return_type = previous_return_type;
+        self.inferred_return_type = previous_inferred_return_type;
         result
+    }
+
+    /// Remembers the largest bounded string returned by the current function.
+    pub(super) fn record_inferred_string_return(&mut self, actual: TypeName) {
+        let TypeName::String(Some(actual_capacity)) = actual else {
+            return;
+        };
+        let capacity = match self.inferred_return_type {
+            Some(TypeName::String(Some(previous_capacity))) => {
+                previous_capacity.max(actual_capacity)
+            }
+            _ => actual_capacity,
+        };
+        self.inferred_return_type = Some(TypeName::String(Some(capacity)));
     }
 }

@@ -1,0 +1,3 @@
+// Expected: Semantic error because the literal needs five UTF-8 bytes.
+let name: string<4> = "Lucas";
+print name;

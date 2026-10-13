@@ -2,5 +2,7 @@
 
 mod environment;
 mod interpreter;
+mod limits;
 
 pub(crate) use interpreter::Interpreter;
+pub use limits::ExecutionLimits;

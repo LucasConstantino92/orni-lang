@@ -1,0 +1,4 @@
+// Expected: Runtime error instead of an unsafe numeric result.
+let total = 42;
+let divisor = 0;
+print total / divisor;

@@ -15,6 +15,7 @@ mod syntax;
 pub use diagnostics::OrniError;
 
 use frontend::{Lexer, Parser, TypeChecker};
+pub use runtime::ExecutionLimits;
 use runtime::Interpreter;
 
 /// Checks an Orni program without executing it.
@@ -39,8 +40,17 @@ pub fn check(source: &str) -> Result<(), OrniError> {
 /// # Ok::<(), orni::OrniError>(())
 /// ```
 pub fn run(source: &str) -> Result<String, OrniError> {
+    run_with_limits(source, ExecutionLimits::default())
+}
+
+/// Runs an Orni program with explicit resource boundaries.
+///
+/// This is useful for servers that execute untrusted or user-provided source.
+/// Values are still released automatically through Rust ownership when their
+/// scope ends, while the supplied limits prevent unbounded resource growth.
+pub fn run_with_limits(source: &str, limits: ExecutionLimits) -> Result<String, OrniError> {
     let program = compile(source)?;
-    Interpreter::new().execute(&program)
+    Interpreter::new(limits).execute(&program)
 }
 
 /// Produces a validated syntax tree shared by checking and execution.
@@ -53,7 +63,7 @@ fn compile(source: &str) -> Result<Vec<syntax::Statement>, OrniError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check, run};
+    use super::{ExecutionLimits, check, run, run_with_limits};
 
     #[test]
     fn executes_a_small_program() {
@@ -268,6 +278,28 @@ mod tests {
     }
 
     #[test]
+    fn infers_the_smallest_safe_signed_integer_type() {
+        let output = run(r#"
+                let retries = 3;
+                let port = 8080;
+                let users = 250000;
+                let distance = 9000000000;
+
+                print retries;
+                print port;
+                print users;
+                print distance;
+            "#)
+        .expect("inferred integer widths should execute normally");
+
+        assert_eq!(output, "3\n8080\n250000\n9000000000\n");
+
+        let error = run("let maximum = 127; let one = 1; print maximum + one;")
+            .expect_err("inferred int8 arithmetic must remain checked");
+        assert!(error.to_string().contains("out of range for int8"));
+    }
+
+    #[test]
     fn supports_fixed_width_signed_and_unsigned_integers() {
         let output = run(r#"
                 let signed: int8 = -128;
@@ -301,15 +333,18 @@ mod tests {
     fn infers_and_enforces_utf8_string_capacities() {
         let output = run(r#"
                 let name = "Lucas";
+                let prefix: string = "Hi";
+                let compact: string<3> = prefix + "!";
                 let greeting: string<12> = "Hello, " + name;
                 let accented: string<4> = "Olá";
 
+                print compact;
                 print greeting;
                 print accented;
             "#)
         .expect("inferred string capacities should fit their declarations");
 
-        assert_eq!(output, "Hello, Lucas\nOlá\n");
+        assert_eq!(output, "Hi!\nHello, Lucas\nOlá\n");
 
         let error = check("let name: string<4> = \"Lucas\";")
             .expect_err("a literal that exceeds its capacity must fail during checking");
@@ -317,6 +352,75 @@ mod tests {
             error
                 .to_string()
                 .contains("expects string<4>, but found string<5>")
+        );
+    }
+
+    #[test]
+    fn infers_string_capacities_across_function_calls() {
+        let output = run(r#"
+                func greet(name: string, greeting: string = "Hello") -> string {
+                    return greeting + ", " + name;
+                }
+
+                let default_greeting: string<11> = greet("Orni");
+                let custom_greeting: string<13> = greet("Orni", "Welcome");
+
+                print default_greeting;
+                print custom_greeting;
+            "#)
+        .expect("bare string signatures should infer capacities at each call site");
+
+        assert_eq!(output, "Hello, Orni\nWelcome, Orni\n");
+    }
+
+    #[test]
+    fn enforces_configurable_runtime_resource_limits() {
+        let string_error = run_with_limits(
+            "let value = \"abcdef\"; print value;",
+            ExecutionLimits {
+                max_string_bytes: 5,
+                ..ExecutionLimits::default()
+            },
+        )
+        .expect_err("a retained string must respect the per-value limit");
+        assert!(string_error.to_string().contains("runtime limit is 5"));
+
+        let retained_error = run_with_limits(
+            "let first = \"abc\"; let second = \"def\"; print second;",
+            ExecutionLimits {
+                max_retained_string_bytes: 5,
+                ..ExecutionLimits::default()
+            },
+        )
+        .expect_err("active scopes must respect their retained string limit");
+        assert!(
+            retained_error
+                .to_string()
+                .contains("retained strings exceed")
+        );
+
+        let recursion_error = run_with_limits(
+            "func recurse(depth: int) -> int { return recurse(depth + 1); } print recurse(0);",
+            ExecutionLimits {
+                max_call_depth: 3,
+                ..ExecutionLimits::default()
+            },
+        )
+        .expect_err("recursive calls must stop at the configured depth");
+        assert!(recursion_error.to_string().contains("call depth exceeds"));
+
+        let operation_error = run_with_limits(
+            "let value = 1; print value;",
+            ExecutionLimits {
+                max_operations: 2,
+                ..ExecutionLimits::default()
+            },
+        )
+        .expect_err("execution must stop when its operation budget is exhausted");
+        assert!(
+            operation_error
+                .to_string()
+                .contains("limit of 2 operation(s)")
         );
     }
 }

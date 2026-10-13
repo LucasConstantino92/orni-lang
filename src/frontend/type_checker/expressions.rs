@@ -105,7 +105,7 @@ impl TypeChecker {
         let required = signature
             .parameters
             .iter()
-            .filter(|(_, optional)| !optional)
+            .filter(|parameter| parameter.default_value.is_none())
             .count();
         if arguments.len() < required || arguments.len() > signature.parameters.len() {
             let expected = if required == signature.parameters.len() {
@@ -124,11 +124,67 @@ impl TypeChecker {
                 ),
             ));
         }
-        for (argument, (expected, _)) in arguments.iter().zip(&signature.parameters) {
+        let mut argument_types = Vec::with_capacity(arguments.len());
+        for (argument, parameter) in arguments.iter().zip(&signature.parameters) {
             let actual = self.expression_type(argument)?;
-            self.require_type(closing_parenthesis, *expected, actual, "function argument")?;
+            self.require_type(
+                closing_parenthesis,
+                parameter.type_name,
+                actual,
+                "function argument",
+            )?;
+            argument_types.push(actual);
         }
-        Ok(signature.return_type)
+        if signature.return_type == TypeName::String(None) {
+            self.infer_bounded_string_return(name, &signature, &argument_types)
+        } else {
+            Ok(signature.return_type)
+        }
+    }
+
+    /// Specializes an automatically sized string return for one call site.
+    fn infer_bounded_string_return(
+        &mut self,
+        function_name: &str,
+        signature: &super::FunctionSignature,
+        argument_types: &[TypeName],
+    ) -> Result<TypeName, OrniError> {
+        if self
+            .inference_stack
+            .iter()
+            .any(|active| active == function_name)
+        {
+            return Ok(signature.return_type);
+        }
+
+        let previous_return_type = self.current_return_type.replace(signature.return_type);
+        let previous_inferred_return_type = self.inferred_return_type.take();
+        self.inference_stack.push(function_name.to_owned());
+        self.scopes.push(std::collections::HashMap::new());
+
+        let result = (|| {
+            for (index, parameter) in signature.parameters.iter().enumerate() {
+                let parameter_type = if let Some(argument_type) = argument_types.get(index) {
+                    *argument_type
+                } else {
+                    self.expression_type(
+                        parameter
+                            .default_value
+                            .as_ref()
+                            .expect("the arity check guarantees a default value"),
+                    )?
+                };
+                self.define(identifier_name(&parameter.name), parameter_type);
+            }
+            self.check_statements(&signature.body)?;
+            Ok(self.inferred_return_type.unwrap_or(signature.return_type))
+        })();
+
+        self.scopes.pop();
+        self.inference_stack.pop();
+        self.current_return_type = previous_return_type;
+        self.inferred_return_type = previous_inferred_return_type;
+        result
     }
 }
 

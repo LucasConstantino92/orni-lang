@@ -199,12 +199,16 @@ impl Parser {
 
     /// Parses a print statement terminated by a semicolon.
     fn print_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
         let expression = self.expression()?;
         self.consume(
             |kind| matches!(kind, TokenKind::Semicolon),
             "expected ';' after the value",
         )?;
-        Ok(Statement::Print(expression))
+        Ok(Statement::Print {
+            keyword,
+            expression,
+        })
     }
 
     /// Parses an optional return value followed by a semicolon.

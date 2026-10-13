@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use super::Token;
 
 /// The storage range selected for an integer value.
@@ -22,6 +24,19 @@ pub(crate) enum IntegerType {
 }
 
 impl IntegerType {
+    /// Chooses the smallest signed integer type that contains a literal.
+    pub fn smallest_signed(value: i128) -> Self {
+        if Self::Int8.contains(value) {
+            Self::Int8
+        } else if Self::Int16.contains(value) {
+            Self::Int16
+        } else if Self::Int32.contains(value) {
+            Self::Int32
+        } else {
+            Self::Int64
+        }
+    }
+
     /// Returns whether a value fits within this integer type.
     pub fn contains(self, value: i128) -> bool {
         match self {
@@ -120,7 +135,12 @@ pub(crate) enum Statement {
         body: Vec<Statement>,
     },
     /// Evaluates and writes a value to the program output.
-    Print(Expression),
+    Print {
+        /// The `print` token used when reporting output limit errors.
+        keyword: Token,
+        /// The value written to the captured program output.
+        expression: Expression,
+    },
     /// Stops the current function and optionally produces a value.
     Return {
         /// The `return` token used when reporting an invalid top-level return.
@@ -194,7 +214,7 @@ pub(crate) enum Value {
     /// A double-precision floating-point number.
     Double(f64),
     /// A UTF-8 string.
-    String(String),
+    String(Rc<str>),
     /// A boolean value.
     Bool(bool),
     /// A single Unicode scalar value.
