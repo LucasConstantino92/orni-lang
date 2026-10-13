@@ -1,0 +1,61 @@
+// Stage 4: bounded values, inference, and documented function signatures.
+
+/// Creates a greeting while preserving a predictable maximum allocation.
+/// The greeting argument is optional and defaults to "Hello".
+func greet(name: string<32>, greeting: string<16> = "Hello") -> string<64> {
+    return greeting + ", " + name;
+}
+
+/// Describes whether a service is healthy.
+func service_status(service: string<32>, healthy: bool) -> string<64> {
+    if healthy {
+        return service + " is healthy";
+    } else {
+        return service + " needs attention";
+    }
+}
+
+/// Reports whether a port is one of the conventional HTTP ports.
+func is_http_port(port: uint16) -> bool {
+    if port == 80 {
+        return true;
+    } else {
+        return port == 443;
+    }
+}
+
+/// Chooses a bounded worker count from the current server load.
+func recommended_workers(load: double) -> uint8 {
+    if load >= 0.8 {
+        return 16;
+    } else {
+        return 4;
+    }
+}
+
+/// Calculates a completion ratio using double-precision arithmetic.
+func completion_ratio(completed: double, total: double) -> double {
+    return completed / total;
+}
+
+/// Reports whether a character separates words in a command name.
+func is_separator(value: char) -> bool {
+    return value == '-';
+}
+
+/// Prints a bounded message and intentionally returns unit.
+func announce(message: string<64>) -> unit {
+    print message;
+}
+
+let project = "Orni";
+let load = 0.85;
+
+print greet(project);
+print greet(project, "Welcome");
+print service_status("api", true);
+print is_http_port(8080);
+print recommended_workers(load);
+print completion_ratio(3, 4);
+print is_separator('-');
+announce("All type-safety examples completed.");

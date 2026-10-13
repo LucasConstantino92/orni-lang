@@ -86,6 +86,8 @@ The `examples` directory preserves the language's learning path:
 1. `01_basics.orni` introduces values, variables, and arithmetic.
 2. `02_functions.orni` introduces functions and return values.
 3. `03_conditionals.orni` introduces comparisons, branches, and block scopes.
+4. `04_type_safety.orni` demonstrates bounded strings, fixed-width integers,
+   type inference, optional parameters, and documented function signatures.
 
 ## Visual Studio Code support
 
