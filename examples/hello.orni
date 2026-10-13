@@ -1,0 +1,12 @@
+// The first executable Orni program.
+let name = "Orni";
+let meaning = "Oriented Injection";
+
+fn announce(project, description) {
+    let message = project + " means " + description;
+    print message;
+}
+
+announce(name, meaning);
+print meaning;
+print 6 * 7;
