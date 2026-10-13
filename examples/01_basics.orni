@@ -1,0 +1,7 @@
+// Stage 1: values, variables, arithmetic, and output.
+
+let language = "Orni";
+let answer = 6 * 7;
+
+print language;
+print answer;

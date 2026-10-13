@@ -1,0 +1,7 @@
+// Stage 2: functions, parameters, and return values.
+
+fn greet(name) {
+    return "Hello, " + name;
+}
+
+print greet("Orni");

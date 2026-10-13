@@ -23,6 +23,26 @@ pub(crate) enum Statement {
     },
     /// Evaluates and writes a value to the program output.
     Print(Expression),
+    /// Stops the current function and optionally produces a value.
+    Return {
+        /// The `return` token used when reporting an invalid top-level return.
+        keyword: Token,
+        /// The value returned by the function, or `None` for `return;`.
+        value: Option<Expression>,
+    },
+    /// Executes one of two branches according to a boolean condition.
+    If {
+        /// The `if` token used when reporting an invalid condition.
+        keyword: Token,
+        /// The boolean expression that selects a branch.
+        condition: Expression,
+        /// The branch executed when the condition is `true`.
+        then_branch: Box<Statement>,
+        /// The optional branch executed when the condition is `false`.
+        else_branch: Option<Box<Statement>>,
+    },
+    /// Executes statements inside a nested lexical scope.
+    Block(Vec<Statement>),
     /// Evaluates an expression and discards its resulting value.
     Expression(Expression),
 }

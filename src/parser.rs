@@ -36,6 +36,15 @@ impl Parser {
         if self.matches(|kind| matches!(kind, TokenKind::Print)) {
             return self.print_statement();
         }
+        if self.matches(|kind| matches!(kind, TokenKind::Return)) {
+            return self.return_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::If)) {
+            return self.if_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::LeftBrace)) {
+            return Ok(Statement::Block(self.block()?));
+        }
 
         self.expression_statement()
     }
@@ -122,6 +131,49 @@ impl Parser {
         Ok(Statement::Print(expression))
     }
 
+    /// Parses an optional return value followed by a semicolon.
+    fn return_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
+        let value = if matches!(self.peek().kind, TokenKind::Semicolon) {
+            None
+        } else {
+            Some(self.expression()?)
+        };
+        self.consume(
+            |kind| matches!(kind, TokenKind::Semicolon),
+            "expected ';' after the return value",
+        )?;
+        Ok(Statement::Return { keyword, value })
+    }
+
+    /// Parses an `if` statement with brace-delimited branches.
+    fn if_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
+        let condition = self.expression()?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::LeftBrace),
+            "expected '{' after the if condition",
+        )?;
+        let then_branch = Box::new(Statement::Block(self.block()?));
+
+        let else_branch = if self.matches(|kind| matches!(kind, TokenKind::Else)) {
+            self.consume(
+                |kind| matches!(kind, TokenKind::LeftBrace),
+                "expected '{' after 'else'",
+            )?;
+            Some(Box::new(Statement::Block(self.block()?)))
+        } else {
+            None
+        };
+
+        Ok(Statement::If {
+            keyword,
+            condition,
+            then_branch,
+            else_branch,
+        })
+    }
+
     /// Parses an expression used as a statement, such as a function call.
     fn expression_statement(&mut self) -> Result<Statement, OrniError> {
         let expression = self.expression()?;
@@ -134,7 +186,45 @@ impl Parser {
 
     /// Parses an expression starting at the lowest supported precedence.
     fn expression(&mut self) -> Result<Expression, OrniError> {
-        self.term()
+        self.equality()
+    }
+
+    /// Parses equality and inequality expressions.
+    fn equality(&mut self) -> Result<Expression, OrniError> {
+        let mut expression = self.comparison()?;
+        while self.matches(|kind| matches!(kind, TokenKind::EqualEqual | TokenKind::BangEqual)) {
+            let operator = self.previous().clone();
+            let right = self.comparison()?;
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator,
+                right: Box::new(right),
+            };
+        }
+        Ok(expression)
+    }
+
+    /// Parses numeric ordering comparisons.
+    fn comparison(&mut self) -> Result<Expression, OrniError> {
+        let mut expression = self.term()?;
+        while self.matches(|kind| {
+            matches!(
+                kind,
+                TokenKind::Greater
+                    | TokenKind::GreaterEqual
+                    | TokenKind::Less
+                    | TokenKind::LessEqual
+            )
+        }) {
+            let operator = self.previous().clone();
+            let right = self.term()?;
+            expression = Expression::Binary {
+                left: Box::new(expression),
+                operator,
+                right: Box::new(right),
+            };
+        }
+        Ok(expression)
     }
 
     /// Parses addition and subtraction expressions.
@@ -169,7 +259,7 @@ impl Parser {
 
     /// Parses prefix operators before delegating to call expressions.
     fn unary(&mut self) -> Result<Expression, OrniError> {
-        if self.matches(|kind| matches!(kind, TokenKind::Minus)) {
+        if self.matches(|kind| matches!(kind, TokenKind::Minus | TokenKind::Bang)) {
             let operator = self.previous().clone();
             let right = self.unary()?;
             return Ok(Expression::Unary {

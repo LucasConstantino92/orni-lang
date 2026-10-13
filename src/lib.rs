@@ -95,4 +95,63 @@ mod tests {
             "Runtime error at line 1, column 38: function 'greet' expects 1 argument(s), but received 0"
         );
     }
+
+    #[test]
+    fn returns_values_and_stops_the_function_body() {
+        let output = run(r#"
+                fn add(left, right) {
+                    return left + right;
+                    print "unreachable";
+                }
+
+                print add(20, 22);
+            "#)
+        .expect("the program should run");
+
+        assert_eq!(output, "42\n");
+    }
+
+    #[test]
+    fn rejects_return_outside_a_function() {
+        let error = run("return 42;").expect_err("the program should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Runtime error at line 1, column 1: return can only be used inside a function"
+        );
+    }
+
+    #[test]
+    fn executes_conditionals_and_comparisons() {
+        let output = run(r#"
+                fn classify(number) {
+                    if number >= 10 {
+                        return "large";
+                    } else {
+                        return "small";
+                    }
+                }
+
+                print classify(12);
+                print 2 + 3 * 4 == 14;
+                print !false;
+            "#)
+        .expect("the program should run");
+
+        assert_eq!(output, "large\ntrue\ntrue\n");
+    }
+
+    #[test]
+    fn isolates_variables_declared_inside_blocks() {
+        let error = run(r#"
+                if true {
+                    let hidden = 42;
+                    print hidden;
+                }
+                print hidden;
+            "#)
+        .expect_err("the program should fail");
+
+        assert!(error.to_string().contains("undefined variable 'hidden'"));
+    }
 }

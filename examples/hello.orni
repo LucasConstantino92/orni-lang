@@ -2,11 +2,10 @@
 let name = "Orni";
 let meaning = "Oriented Injection";
 
-fn announce(project, description) {
-    let message = project + " means " + description;
-    print message;
+fn describe(project, description) {
+    return project + " means " + description;
 }
 
-announce(name, meaning);
-print meaning;
+let message = describe(name, meaning);
+print message;
 print 6 * 7;

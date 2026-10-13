@@ -43,7 +43,14 @@ impl Lexer {
                 '}' => TokenKind::RightBrace,
                 ',' => TokenKind::Comma,
                 ';' => TokenKind::Semicolon,
+                '=' if self.matches('=') => TokenKind::EqualEqual,
                 '=' => TokenKind::Equal,
+                '!' if self.matches('=') => TokenKind::BangEqual,
+                '!' => TokenKind::Bang,
+                '>' if self.matches('=') => TokenKind::GreaterEqual,
+                '>' => TokenKind::Greater,
+                '<' if self.matches('=') => TokenKind::LessEqual,
+                '<' => TokenKind::Less,
                 '+' => TokenKind::Plus,
                 '-' => TokenKind::Minus,
                 '*' => TokenKind::Star,
@@ -133,6 +140,9 @@ impl Lexer {
             "let" => TokenKind::Let,
             "fn" => TokenKind::Fn,
             "print" => TokenKind::Print,
+            "return" => TokenKind::Return,
+            "if" => TokenKind::If,
+            "else" => TokenKind::Else,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             _ => TokenKind::Identifier(value),
@@ -160,6 +170,15 @@ impl Lexer {
     /// Returns the character after the current one without consuming it.
     fn peek_next(&self) -> Option<char> {
         self.chars.get(self.current + 1).copied()
+    }
+
+    /// Consumes `expected` when it is the current source character.
+    fn matches(&mut self, expected: char) -> bool {
+        if self.peek() != Some(expected) {
+            return false;
+        }
+        self.advance();
+        true
     }
 
     /// Reports whether every source character has been consumed.

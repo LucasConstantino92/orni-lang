@@ -1,0 +1,14 @@
+// Stage 3: comparisons, conditionals, and block scopes.
+
+fn temperature_label(celsius) {
+    if celsius >= 30 {
+        let label = "hot";
+        return label;
+    } else {
+        return "comfortable";
+    }
+}
+
+print temperature_label(32);
+print 10 != 5;
+print !false;

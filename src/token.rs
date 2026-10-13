@@ -25,6 +25,12 @@ pub(crate) enum TokenKind {
     Fn,
     /// The `print` keyword.
     Print,
+    /// The `return` keyword.
+    Return,
+    /// The `if` keyword.
+    If,
+    /// The `else` keyword.
+    Else,
     /// The `true` boolean literal.
     True,
     /// The `false` boolean literal.
@@ -37,6 +43,20 @@ pub(crate) enum TokenKind {
     String(String),
     /// The assignment symbol, `=`.
     Equal,
+    /// The equality comparison symbol, `==`.
+    EqualEqual,
+    /// The logical negation symbol, `!`.
+    Bang,
+    /// The inequality comparison symbol, `!=`.
+    BangEqual,
+    /// The greater-than comparison symbol, `>`.
+    Greater,
+    /// The greater-than-or-equal comparison symbol, `>=`.
+    GreaterEqual,
+    /// The less-than comparison symbol, `<`.
+    Less,
+    /// The less-than-or-equal comparison symbol, `<=`.
+    LessEqual,
     /// The addition or string-concatenation symbol, `+`.
     Plus,
     /// The subtraction or numeric-negation symbol, `-`.

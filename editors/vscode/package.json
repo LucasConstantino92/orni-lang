@@ -1,0 +1,39 @@
+{
+  "name": "orni-language",
+  "displayName": "Orni Language",
+  "description": "Language support for the Orni programming language.",
+  "version": "0.1.1",
+  "publisher": "orni-lang",
+  "engines": {
+    "vscode": ">=1.80.0"
+  },
+  "categories": ["Programming Languages"],
+  "keywords": ["orni", "language", "syntax"],
+  "files": [
+    "icons",
+    "syntaxes",
+    "language-configuration.json",
+    "README.md"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "orni",
+        "aliases": ["Orni", "orni"],
+        "extensions": [".orni"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/orni-file.png",
+          "dark": "./icons/orni-file.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "orni",
+        "scopeName": "source.orni",
+        "path": "./syntaxes/orni.tmLanguage.json"
+      }
+    ]
+  }
+}

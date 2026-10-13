@@ -1,0 +1,15 @@
+// Edit this file while learning and developing Orni.
+
+let project = "Orni";
+let version = 1;
+
+fn status(name, current_version) {
+    if current_version >= 1 {
+        return name + " is growing!";
+    } else {
+        return name + " is just getting started.";
+    }
+}
+
+print status(project, version);
+print 6 * 7 == 42;
