@@ -67,10 +67,18 @@ test("module buffer analysis checks unsaved source without requiring application
 
 test("large and deeply nested input fails with a diagnostic instead of trapping", () => {
   const inferenceChain = Array.from({ length: 70 }, (_, index) => `func f${index}() -> string { return ${index === 69 ? '"end"' : `f${index + 1}()`}; }`).join("\n");
-  for (const source of [" ".repeat(1048577), "print 1;".repeat(7000), inferenceChain, `print ${"(".repeat(100)}1${")".repeat(100)};`, `print ${Array(300).fill("1").join("+")};`]) {
-    const result = run(["--check-stdin"], root, source);
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /error \[ORNI-/);
-    assert.doesNotMatch(result.stderr, /RuntimeError|unreachable|call stack/i);
+  const directory = mkdtempSync(path.join(os.tmpdir(), "orni-limits-"));
+  try {
+    const sources = [" ".repeat(1048577), "print 1;".repeat(7000), inferenceChain, `print ${"(".repeat(100)}1${")".repeat(100)};`, `print ${Array(300).fill("1").join("+")};`];
+    for (const [index, source] of sources.entries()) {
+      const file = path.join(directory, `input-${index}.orni`);
+      writeFileSync(file, source);
+      const result = run(["check", file]);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /error \[ORNI-/);
+      assert.doesNotMatch(result.stderr, /RuntimeError|unreachable|call stack/i);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
