@@ -278,6 +278,16 @@ Validate a program without executing it:
 cargo run --target wasm32-wasip1 -- --check playground/main.orni
 ```
 
+## Releases
+
+Every pushed semantic version tag triggers the release workflow. It runs the
+Rust and editor test suites, applies Clippy with warnings denied, packages the
+editor extension, creates a GitHub Release, and attaches the generated `.vsix`.
+
+Existing tags can be published through **Actions → Release → Run workflow** by
+entering the exact tag, such as `v0.7.5`. Release tags are never moved or
+rewritten by the workflow.
+
 ## Examples
 
 | Example | What it demonstrates |
