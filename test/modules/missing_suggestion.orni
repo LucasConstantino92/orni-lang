@@ -1,0 +1,3 @@
+import privat;
+
+print privat.visible();

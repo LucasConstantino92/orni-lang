@@ -1,0 +1,5 @@
+// Orni 0.7.6: a multi-file application with a selective import.
+
+import services.greeting.{greet};
+
+print greet("Orni");

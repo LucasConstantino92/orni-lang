@@ -1,0 +1,10 @@
+let _separator = ", ";
+
+func _normalize(name: string) -> string {
+    return name;
+}
+
+/// Creates a greeting for a project or person.
+func greet(name: string, greeting: string = "Hello") -> string {
+    return greeting + _separator + _normalize(name);
+}

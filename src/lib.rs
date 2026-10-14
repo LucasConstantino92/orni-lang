@@ -641,4 +641,28 @@ mod tests {
         assert_eq!(warning.code(), "ORNI-W002");
         assert!(warning.message().contains("member 'visible' is never used"));
     }
+
+    #[test]
+    fn suggests_the_closest_module_name() {
+        let error = check_file("test/modules/missing_suggestion.orni")
+            .expect_err("a misspelled import must fail with a useful suggestion");
+
+        assert!(error.to_string().contains("did you mean 'private'?"));
+    }
+
+    #[test]
+    fn reports_unused_private_functions() {
+        let diagnostics = diagnose_file("test/modules/unused_private_entry.orni")
+            .expect("an unused private function is a non-fatal warning");
+        let warning = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code() == "ORNI-W003")
+            .expect("the private function warning should be present");
+
+        assert!(
+            warning
+                .message()
+                .contains("private function '_unused' is never used")
+        );
+    }
 }

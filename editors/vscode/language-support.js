@@ -91,6 +91,35 @@ function findUnusedImports(source) {
   });
 }
 
+/** Finds underscore-prefixed functions that are never called. */
+function findUnusedPrivateFunctions(source) {
+  return findFunctions(source).filter(({ name }) => {
+    if (!name.startsWith("_")) return false;
+    return (source.match(new RegExp(`\\b${name}\\b`, "g")) || []).length === 1;
+  });
+}
+
+/** Returns import statements in their deterministic alphabetical order. */
+function sortedImportStatements(source) {
+  return findImports(source)
+    .map((moduleImport) => source.slice(
+      moduleImport.statementOffset,
+      moduleImport.statementOffset + moduleImport.statementLength,
+    ))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+/** Chooses the position where an automatically generated import should be inserted. */
+function importInsertionOffset(source) {
+  const imports = findImports(source);
+  if (!imports.length) return 0;
+  const last = imports.at(-1);
+  let offset = last.statementOffset + last.statementLength;
+  if (source.slice(offset, offset + 2) === "\r\n") return offset + 2;
+  if (source[offset] === "\n") return offset + 1;
+  return offset;
+}
+
 /** Finds every variable declaration in an Orni source document. */
 function findVariables(source) {
   const pattern = /\blet[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?))?[ \t]*=[ \t]*([^;]+)/g;
@@ -225,8 +254,11 @@ module.exports = {
   findImports,
   findStringCapacityAnnotation,
   findUnusedImports,
+  findUnusedPrivateFunctions,
   findVariables,
+  importInsertionOffset,
   inferExpressionType,
   inferIntegerType,
   identifierPattern,
+  sortedImportStatements,
 };

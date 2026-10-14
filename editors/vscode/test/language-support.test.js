@@ -8,7 +8,10 @@ const {
   findImports,
   findStringCapacityAnnotation,
   findUnusedImports,
+  findUnusedPrivateFunctions,
   findVariables,
+  importInsertionOffset,
+  sortedImportStatements,
 } = require("../language-support");
 
 test("finds documented functions", () => {
@@ -70,6 +73,29 @@ print greet("Orni");
   assert.equal(unused.unusedCode, "ORNI-W002");
   assert.equal(unused.unusedName, "framework_name");
   assert.equal(source.slice(unused.offset, unused.offset + unused.length), "framework_name");
+});
+
+test("reports only unused private functions", () => {
+  const source = `
+func _unused() -> unit { print "unused"; }
+func _used() -> unit { print "used"; }
+func start() -> unit { _used(); }
+`;
+
+  assert.deepEqual(
+    findUnusedPrivateFunctions(source).map(({ name }) => name),
+    ["_unused"],
+  );
+});
+
+test("sorts imports and inserts new imports after the existing block", () => {
+  const source = "import services.logging;\nimport services.greeting;\n\nprint logging.name;";
+
+  assert.deepEqual(sortedImportStatements(source), [
+    "import services.greeting;",
+    "import services.logging;",
+  ]);
+  assert.equal(source.slice(importInsertionOffset(source)), "\nprint logging.name;");
 });
 
 test("finds the closest preceding variable", () => {

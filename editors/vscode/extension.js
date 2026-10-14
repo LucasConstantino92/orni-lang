@@ -10,8 +10,11 @@ const {
   findImports,
   findStringCapacityAnnotation,
   findUnusedImports,
+  findUnusedPrivateFunctions,
   findVariables,
+  importInsertionOffset,
   identifierPattern,
+  sortedImportStatements,
 } = require("./language-support");
 
 const builtins = {
@@ -91,9 +94,54 @@ async function backendDefinitionFor(name) {
 }
 
 /** Builds rich hover content for a symbol. */
-function hoverFor(document, position) {
+async function hoverFor(document, position) {
   const symbol = symbolAt(document, position);
   if (!symbol) return undefined;
+
+  const source = document.getText();
+  const usageOffset = document.offsetAt(position);
+  const moduleImport = findImports(source).find(
+    (candidate) =>
+      usageOffset >= candidate.offset &&
+      usageOffset <= candidate.offset + candidate.length,
+  );
+  if (moduleImport) {
+    const modulePath = path.join(
+      path.dirname(document.uri.fsPath),
+      ...moduleImport.segments,
+    ) + ".orni";
+    try {
+      const moduleDocument = await vscode.workspace.openTextDocument(modulePath);
+      const moduleSource = moduleDocument.getText();
+      const publicFunctions = findFunctions(moduleSource).filter(
+        ({ name }) => !name.startsWith("_"),
+      );
+      const publicVariables = findVariables(moduleSource).filter(
+        ({ name }) => !name.startsWith("_"),
+      );
+      const markdown = new vscode.MarkdownString();
+      markdown.appendCodeblock(`module ${moduleImport.path}`, "orni");
+      markdown.appendMarkdown(`\nDefined in \`${modulePath}\`\n\n**Public members**\n`);
+      for (const declaration of publicFunctions) {
+        markdown.appendMarkdown(
+          `\n- \`func ${declaration.name}(${declaration.parameters.join(", ")}) -> ${declaration.returnType}\`${declaration.documentation ? ` — ${declaration.documentation}` : ""}`,
+        );
+      }
+      for (const declaration of publicVariables) {
+        markdown.appendMarkdown(
+          `\n- \`let ${declaration.name}: ${declaration.typeName || declaration.inferredType || "inferred"}\``,
+        );
+      }
+      if (!publicFunctions.length && !publicVariables.length) {
+        markdown.appendMarkdown("\n- No public members");
+      }
+      return new vscode.Hover(markdown);
+    } catch {
+      return new vscode.Hover(
+        new vscode.MarkdownString(`Module \`${moduleImport.path}\` could not be opened.`),
+      );
+    }
+  }
 
   const builtin = builtins[symbol.name];
   if (builtin) {
@@ -121,8 +169,6 @@ function hoverFor(document, position) {
     return new vscode.Hover(markdown, symbol.range);
   }
 
-  const source = document.getText();
-  const usageOffset = document.offsetAt(position);
   const functionDeclaration = findClosestDeclaration(
     findFunctions(source),
     symbol.name,
@@ -311,6 +357,17 @@ function lintDiagnostics(document) {
     diagnostic.code = "orni.unusedVariable";
     return [diagnostic];
   });
+  const unusedPrivateFunctions = findUnusedPrivateFunctions(source).map((declaration) => {
+    const start = document.positionAt(declaration.offset);
+    const diagnostic = new vscode.Diagnostic(
+      new vscode.Range(start, start.translate(0, declaration.name.length)),
+      `Private function '${declaration.name}' is never used.`,
+      vscode.DiagnosticSeverity.Warning,
+    );
+    diagnostic.source = "Orni lint";
+    diagnostic.code = "ORNI-W003";
+    return diagnostic;
+  });
   const boundedStrings = findBoundedStringViolations(source).map((violation) => {
     const start = document.positionAt(violation.offset);
     const end = document.positionAt(violation.offset + violation.length);
@@ -335,11 +392,64 @@ function lintDiagnostics(document) {
     diagnostic.code = "orni.stringCapacity";
     return diagnostic;
   });
-  return [...boundedVariables, ...boundedStrings, ...unusedImports, ...unusedVariables];
+  return [
+    ...boundedVariables,
+    ...boundedStrings,
+    ...unusedImports,
+    ...unusedVariables,
+    ...unusedPrivateFunctions,
+  ];
+}
+
+/** Discovers public declarations that can be imported from nearby modules. */
+async function workspacePublicMembers(document) {
+  const moduleUris = await vscode.workspace.findFiles(
+    "**/*.orni",
+    "**/{.git,target,node_modules}/**",
+    200,
+  );
+  const currentDirectory = path.dirname(document.uri.fsPath);
+  const members = [];
+  for (const uri of moduleUris) {
+    if (uri.fsPath === document.uri.fsPath) continue;
+    const relativePath = path.relative(currentDirectory, uri.fsPath);
+    if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) continue;
+    const modulePath = relativePath
+      .replace(/\.orni$/i, "")
+      .split(path.sep)
+      .join(".");
+    try {
+      const moduleDocument = await vscode.workspace.openTextDocument(uri);
+      const source = moduleDocument.getText();
+      for (const declaration of findFunctions(source).filter(({ name }) => !name.startsWith("_"))) {
+        members.push({ ...declaration, modulePath, kind: "function" });
+      }
+      for (const declaration of findVariables(source).filter(({ name }) => !name.startsWith("_"))) {
+        members.push({ ...declaration, modulePath, kind: "variable" });
+      }
+    } catch {
+      // Files that disappear during discovery are ignored until the next request.
+    }
+  }
+  return members;
+}
+
+/** Builds the edit that adds one selective import to a document. */
+function autoImportEdit(document, candidate) {
+  const source = document.getText();
+  if (findImports(source).some(({ path: importedPath }) => importedPath === candidate.modulePath)) {
+    return undefined;
+  }
+  const offset = importInsertionOffset(source);
+  const suffix = offset === 0 ? "\n\n" : "\n";
+  return vscode.TextEdit.insert(
+    document.positionAt(offset),
+    `import ${candidate.modulePath}.{${candidate.name}};${suffix}`,
+  );
 }
 
 /** Creates context-aware fixes shown by the editor's Ctrl+. menu. */
-function codeActionsFor(document, context) {
+async function codeActionsFor(document, context) {
   const actions = [];
   const source = document.getText();
 
@@ -447,6 +557,53 @@ function codeActionsFor(document, context) {
       remove.diagnostics = [diagnostic];
       remove.isPreferred = true;
       actions.push(remove);
+    }
+
+    const missingName = diagnostic.message.match(/undefined variable '([A-Za-z_][A-Za-z0-9_]*)'/)?.[1];
+    if (missingName) {
+      const candidates = (await workspacePublicMembers(document)).filter(
+        ({ name }) => name === missingName,
+      );
+      for (const candidate of candidates) {
+        const importEdit = autoImportEdit(document, candidate);
+        if (!importEdit) continue;
+        const addImport = new vscode.CodeAction(
+          `Import '${candidate.name}' from '${candidate.modulePath}'`,
+          vscode.CodeActionKind.QuickFix,
+        );
+        addImport.edit = new vscode.WorkspaceEdit();
+        addImport.edit.set(document.uri, [importEdit]);
+        addImport.diagnostics = [diagnostic];
+        addImport.isPreferred = candidates.length === 1;
+        actions.push(addImport);
+      }
+    }
+  }
+
+  const imports = findImports(source);
+  if (imports.length > 1) {
+    const sorted = sortedImportStatements(source);
+    const current = imports.map((moduleImport) => source.slice(
+      moduleImport.statementOffset,
+      moduleImport.statementOffset + moduleImport.statementLength,
+    ));
+    if (current.some((statement, index) => statement !== sorted[index])) {
+      const organize = new vscode.CodeAction(
+        "Organize Orni imports",
+        vscode.CodeActionKind.SourceOrganizeImports,
+      );
+      organize.edit = new vscode.WorkspaceEdit();
+      organize.edit.set(
+        document.uri,
+        imports.map((moduleImport, index) => vscode.TextEdit.replace(
+          new vscode.Range(
+            document.positionAt(moduleImport.statementOffset),
+            document.positionAt(moduleImport.statementOffset + moduleImport.statementLength),
+          ),
+          sorted[index],
+        )),
+      );
+      actions.push(organize);
     }
   }
 
@@ -719,14 +876,37 @@ async function moduleCompletionsFor(document, position) {
   );
   const access = prefix.match(/([A-Za-z_][A-Za-z0-9_]*)\.$/);
   if (!access) {
-    const selectedMembers = findImports(document.getText()).flatMap((moduleImport) =>
+    const source = document.getText();
+    const selectedMembers = findImports(source).flatMap((moduleImport) =>
       moduleImport.members.map(({ name }) => {
         const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Reference);
         item.detail = `Imported from ${moduleImport.path}`;
         return item;
       }),
     );
-    return selectedMembers.length ? selectedMembers : undefined;
+    const visibleNames = new Set([
+      ...findFunctions(source).map(({ name }) => name),
+      ...findVariables(source).map(({ name }) => name),
+      ...selectedMembers.map(({ label }) => label),
+    ]);
+    const autoImports = [];
+    for (const candidate of await workspacePublicMembers(document)) {
+      if (visibleNames.has(candidate.name)) continue;
+      const edit = autoImportEdit(document, candidate);
+      if (!edit) continue;
+      const item = new vscode.CompletionItem(
+        candidate.name,
+        candidate.kind === "function"
+          ? vscode.CompletionItemKind.Function
+          : vscode.CompletionItemKind.Variable,
+      );
+      item.detail = `Auto import from ${candidate.modulePath}`;
+      item.documentation = candidate.documentation || undefined;
+      item.additionalTextEdits = [edit];
+      item.sortText = `z-${candidate.name}`;
+      autoImports.push(item);
+    }
+    return [...selectedMembers, ...autoImports];
   }
   const imported = findImports(document.getText()).find(
     (candidate) => !candidate.members.length && candidate.namespace === access[1],

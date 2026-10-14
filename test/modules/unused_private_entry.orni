@@ -1,0 +1,3 @@
+import unused_private;
+
+print unused_private.visible();

@@ -1,0 +1,7 @@
+func _unused() -> string {
+    return "unused";
+}
+
+func visible() -> string {
+    return "visible";
+}

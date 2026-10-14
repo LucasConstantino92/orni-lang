@@ -210,7 +210,7 @@ failing file directly from the Problems panel.
 Check a reusable module independently from an executable entry file:
 
 ```sh
-cargo run -- --check-module examples/modules/greeting.orni
+cargo run -- check-module examples/modules/greeting.orni
 ```
 
 This stricter check rejects executable top-level statements. In the editor,
@@ -241,6 +241,7 @@ Current diagnostic families:
 | `ORNI-R001` | Runtime safety error |
 | `ORNI-W001` | Unused module import warning |
 | `ORNI-W002` | Unused selectively imported member warning |
+| `ORNI-W003` | Unused private function warning |
 
 Embedding applications can call `diagnose_file` or `diagnose_module` to read
 non-fatal diagnostics. Failed checks expose every collected error through
@@ -263,19 +264,19 @@ rustup target add wasm32-wasip1
 Run the playground:
 
 ```sh
-cargo run --target wasm32-wasip1 -- playground/main.orni
+cargo run --target wasm32-wasip1 -- run playground/main.orni
 ```
 
 Run one of the guided examples:
 
 ```sh
-cargo run --target wasm32-wasip1 -- examples/04_type_safety.orni
+cargo run --target wasm32-wasip1 -- run examples/04_type_safety.orni
 ```
 
 Validate a program without executing it:
 
 ```sh
-cargo run --target wasm32-wasip1 -- --check playground/main.orni
+cargo run --target wasm32-wasip1 -- check playground/main.orni
 ```
 
 ## Releases
@@ -298,6 +299,7 @@ rewritten by the workflow.
 | [`04_type_safety.orni`](examples/04_type_safety.orni) | Inference, bounded types, defaults, and documentation |
 | [`05_modules.orni`](examples/05_modules.orni) | Namespaces, aliases, public values, and private helpers |
 | [`06_selective_imports.orni`](examples/06_selective_imports.orni) | Public members imported directly into the local scope |
+| [`module_project`](examples/module_project) | Auto-imports, nested modules, documentation, and typo suggestions |
 
 ### Learn from failures
 
@@ -329,6 +331,7 @@ Visual Studio Code, and compatible editors. It currently provides:
 - syntax highlighting and language-aware indentation;
 - live diagnostics before execution;
 - context-aware Quick Fix actions through `Ctrl+.`;
+- public-member auto-imports and deterministic import organization;
 - unused-variable warnings;
 - hover documentation and inferred type information;
 - inline type hints for inferred variables;
@@ -406,10 +409,11 @@ Orni source (.orni)
 - [x] Live editor diagnostics, hover information, and navigation
 - [x] Runtime memory, recursion, output, and execution-fuel boundaries
 - [x] Namespaced modules, aliases, underscore privacy, and cycle detection
+- [x] Developer CLI with `orni run`, `orni check`, and module validation
 - [ ] Contracts, providers, and dependency injection syntax
 - [ ] Standard-library adapter model
 - [ ] PostgreSQL adapter with visible, explicit SQL
-- [ ] Production CLI with `orni run`, `orni check`, and richer diagnostics
+- [ ] Installable production CLI with package manifests and richer diagnostics
 - [ ] Benchmarks and memory telemetry
 
 PostgreSQL will remain outside the interpreter core. It is planned as an

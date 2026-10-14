@@ -17,6 +17,7 @@ pub(crate) struct ModuleLoader {
     exports: HashMap<PathBuf, HashSet<String>>,
     visiting: Vec<PathBuf>,
     diagnostics: Vec<OrniDiagnostic>,
+    project_root: Option<PathBuf>,
 }
 
 impl ModuleLoader {
@@ -27,11 +28,13 @@ impl ModuleLoader {
             exports: HashMap::new(),
             visiting: Vec::new(),
             diagnostics: Vec::new(),
+            project_root: None,
         }
     }
 
     /// Loads an entry file and recursively expands its imports.
     pub fn load(mut self, entry: &Path) -> Result<Vec<Statement>, OrniError> {
+        self.set_project_root(entry);
         self.load_module(&normalize(entry), None, true, None)
     }
 
@@ -40,12 +43,14 @@ impl ModuleLoader {
         mut self,
         entry: &Path,
     ) -> Result<(Vec<Statement>, Vec<OrniDiagnostic>), OrniError> {
+        self.set_project_root(entry);
         let program = self.load_module(&normalize(entry), None, true, None)?;
         Ok((program, self.diagnostics))
     }
 
     /// Loads one file as a reusable module rather than an executable entry point.
     pub fn load_library(mut self, module: &Path) -> Result<Vec<Statement>, OrniError> {
+        self.set_project_root(module);
         self.load_module(&normalize(module), Some("__module"), false, None)
     }
 
@@ -54,8 +59,14 @@ impl ModuleLoader {
         mut self,
         module: &Path,
     ) -> Result<(Vec<Statement>, Vec<OrniDiagnostic>), OrniError> {
+        self.set_project_root(module);
         let program = self.load_module(&normalize(module), Some("__module"), false, None)?;
         Ok((program, self.diagnostics))
+    }
+
+    fn set_project_root(&mut self, entry: &Path) {
+        let parent = entry.parent().unwrap_or_else(|| Path::new("."));
+        self.project_root = Some(fs::canonicalize(parent).unwrap_or_else(|_| normalize(parent)));
     }
 
     fn load_module(
@@ -66,6 +77,22 @@ impl ModuleLoader {
         import_token: Option<&Token>,
     ) -> Result<Vec<Statement>, OrniError> {
         let path = normalize(path);
+        let resolved_path = fs::canonicalize(&path).ok();
+        if import_token.is_some()
+            && self.project_root.as_ref().is_some_and(|root| {
+                resolved_path
+                    .as_ref()
+                    .is_some_and(|canonical_path| !canonical_path.starts_with(root))
+            })
+        {
+            return Err(module_error(
+                import_token,
+                format!(
+                    "module '{}' resolves outside the Orni project root",
+                    path.display()
+                ),
+            ));
+        }
         if self.visiting.contains(&path) {
             let chain = self
                 .visiting
@@ -93,12 +120,8 @@ impl ModuleLoader {
             ));
         }
 
-        let source = fs::read_to_string(&path).map_err(|error| {
-            module_error(
-                import_token,
-                format!("could not read module '{}': {error}", path.display()),
-            )
-        })?;
+        let source = fs::read_to_string(&path)
+            .map_err(|error| module_error(import_token, missing_module_message(&path, &error)))?;
         let tokens = Lexer::new(&source)
             .with_source_name(path.display().to_string())
             .scan_tokens()
@@ -126,6 +149,19 @@ impl ModuleLoader {
         }
 
         let (module_functions, module_variables) = collect_module_declarations(&parsed, &path)?;
+        for statement in &parsed {
+            let Statement::Function { name, .. } = statement else {
+                continue;
+            };
+            let function_name = identifier_name(name);
+            if function_name.starts_with('_') && !name_is_used(&parsed, function_name) {
+                self.diagnostics.push(OrniDiagnostic::warning(
+                    name,
+                    "ORNI-W003",
+                    format!("private function '{function_name}' is never used"),
+                ));
+            }
+        }
 
         self.visiting.push(path.clone());
         let result = (|| {
@@ -426,6 +462,54 @@ fn resolve_import(importer: &Path, segments: &[Token]) -> PathBuf {
     }
     path.set_extension("orni");
     normalize(&path)
+}
+
+fn missing_module_message(path: &Path, error: &std::io::Error) -> String {
+    let base = format!("could not read module '{}': {error}", path.display());
+    let Some(expected) = path.file_stem().and_then(|name| name.to_str()) else {
+        return base;
+    };
+    let Some(parent) = path.parent() else {
+        return base;
+    };
+    let suggestion = one_edit_names(expected).into_iter().find(|name| {
+        let mut candidate = parent.join(name);
+        candidate.set_extension("orni");
+        candidate.is_file()
+    });
+    suggestion.map_or(base.clone(), |name| {
+        format!("{base}; did you mean '{name}'?")
+    })
+}
+
+fn one_edit_names(name: &str) -> Vec<String> {
+    let characters = name.chars().collect::<Vec<_>>();
+    let mut candidates = HashSet::new();
+    for index in 0..=characters.len() {
+        for replacement in 'a'..='z' {
+            let mut inserted = characters.clone();
+            inserted.insert(index, replacement);
+            candidates.insert(inserted.iter().collect::<String>());
+            if index < characters.len() {
+                let mut replaced = characters.clone();
+                replaced[index] = replacement;
+                candidates.insert(replaced.iter().collect::<String>());
+            }
+        }
+        if index < characters.len() {
+            let mut removed = characters.clone();
+            removed.remove(index);
+            candidates.insert(removed.iter().collect::<String>());
+        }
+        if index + 1 < characters.len() {
+            let mut transposed = characters.clone();
+            transposed.swap(index, index + 1);
+            candidates.insert(transposed.iter().collect::<String>());
+        }
+    }
+    let mut candidates = candidates.into_iter().collect::<Vec<_>>();
+    candidates.sort();
+    candidates
 }
 
 fn normalize(path: &Path) -> PathBuf {
