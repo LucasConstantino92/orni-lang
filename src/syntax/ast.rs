@@ -114,6 +114,17 @@ pub(crate) struct Parameter {
 /// Statements perform work but do not directly produce a reusable value.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Statement {
+    /// Imports public declarations from another Orni source module.
+    Import {
+        /// The `import` token used for module diagnostics.
+        keyword: Token,
+        /// Identifier segments resolved as a relative `.orni` path.
+        path: Vec<Token>,
+        /// Optional namespace chosen by `as`.
+        alias: Option<Token>,
+        /// Optional public members imported directly into the local scope.
+        members: Option<Vec<Token>>,
+    },
     /// Declares a variable in the active scope.
     Let {
         /// The variable name and its source position.

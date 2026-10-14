@@ -1,0 +1,5 @@
+import circular_a;
+
+func from_b() -> string {
+    return "B";
+}

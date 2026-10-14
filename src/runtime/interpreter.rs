@@ -55,6 +55,7 @@ impl Interpreter {
                 parameters,
                 return_type,
                 body,
+                ..
             } = statement
             {
                 self.functions.insert(
@@ -84,6 +85,9 @@ impl Interpreter {
             self.consume_operation(token)?;
         }
         match statement {
+            Statement::Import { .. } => {
+                unreachable!("module imports are resolved before interpretation")
+            }
             Statement::Let {
                 name,
                 declared_type,
@@ -98,6 +102,7 @@ impl Interpreter {
                 parameters,
                 return_type,
                 body,
+                ..
             } => {
                 self.functions.insert(
                     identifier_name(name).to_owned(),
@@ -177,13 +182,10 @@ impl Interpreter {
             Expression::Grouping(expression) => self.evaluate(expression),
             Expression::Variable(token) => {
                 let name = identifier_name(token);
-                self.environment.get(name).cloned().ok_or_else(|| {
-                    OrniError::runtime(
-                        token.line,
-                        token.column,
-                        format!("undefined variable '{name}'"),
-                    )
-                })
+                self.environment
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| runtime_error(token, &format!("undefined variable '{name}'")))
             }
             Expression::Unary { operator, right } => {
                 let right = self.evaluate(right)?;
@@ -246,13 +248,10 @@ impl Interpreter {
                 ),
             ));
         }
-        let function = self.functions.get(name).cloned().ok_or_else(|| {
-            OrniError::runtime(
-                name_token.line,
-                name_token.column,
-                format!("undefined function '{name}'"),
-            )
-        })?;
+        let function =
+            self.functions.get(name).cloned().ok_or_else(|| {
+                runtime_error(name_token, &format!("undefined function '{name}'"))
+            })?;
 
         let required_arguments = function
             .parameters
@@ -550,6 +549,7 @@ impl Interpreter {
 /// Finds the source token representing a statement-level operation.
 fn statement_token(statement: &Statement) -> Option<&Token> {
     match statement {
+        Statement::Import { keyword, .. } => Some(keyword),
         Statement::Let { name, .. } | Statement::Function { name, .. } => Some(name),
         Statement::Print { keyword, .. }
         | Statement::Return { keyword, .. }
@@ -582,7 +582,7 @@ fn identifier_name(token: &Token) -> &str {
 
 /// Creates a runtime error positioned at the provided token.
 fn runtime_error(token: &Token, message: &str) -> OrniError {
-    OrniError::runtime(token.line, token.column, message)
+    OrniError::runtime(token.line, token.column, message).with_token(token)
 }
 
 /// Applies checked integer conversions and numeric widening.

@@ -1,0 +1,7 @@
+func visible() -> string {
+    return "visible";
+}
+
+func _hidden() -> string {
+    return "hidden";
+}

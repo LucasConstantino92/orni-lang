@@ -37,13 +37,19 @@ impl TypeChecker {
         }
     }
 
-    /// Checks a complete program and returns the first semantic error.
+    /// Checks a complete program and collects independent semantic errors.
     pub fn check(mut self, program: &[Statement]) -> Result<(), OrniError> {
-        self.declare_functions(program)?;
+        let mut errors = self.declare_functions(program);
         for statement in program {
-            self.check_statement(statement)?;
+            if let Err(error) = self.check_statement(statement) {
+                errors.push(error);
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(OrniError::combine(errors))
+        }
     }
 
     /// Defines a variable in the innermost active scope.
@@ -162,5 +168,5 @@ fn identifier_name(token: &Token) -> &str {
 
 /// Creates a semantic error positioned at the provided token.
 fn semantic_error(token: &Token, message: &str) -> OrniError {
-    OrniError::semantic(token.line, token.column, message)
+    OrniError::semantic(token.line, token.column, message).with_token(token)
 }

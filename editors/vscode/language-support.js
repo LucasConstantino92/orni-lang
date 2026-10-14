@@ -2,7 +2,7 @@ const identifierPattern = /[A-Za-z_][A-Za-z0-9_]*/;
 
 /** Finds all documented function declarations in an Orni source document. */
 function findFunctions(source) {
-  const pattern = /((?:^[ \t]*\/\/\/[^\r\n]*(?:\r?\n|$))*)^[ \t]*func[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(([^)]*)\)[ \t]*->[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?)/gm;
+  const pattern = /((?:^[ \t]*\/\/\/[^\r\n]*(?:\r?\n|$))*)^[ \t]*(?:pub[ \t]+)?func[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(([^)]*)\)[ \t]*->[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?)/gm;
   const functions = [];
 
   for (const match of source.matchAll(pattern)) {
@@ -27,6 +27,68 @@ function findFunctions(source) {
   }
 
   return functions;
+}
+
+/** Finds dotted file-module imports in an Orni source document. */
+function findImports(source) {
+  const pattern = /^[ \t]*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\.\{([^}]*)\})?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;/gm;
+  return Array.from(source.matchAll(pattern), (match) => {
+    const selectionOffset = match[2] === undefined
+      ? undefined
+      : match.index + match[0].indexOf(`{${match[2]}}`) + 1;
+    let memberSearchOffset = 0;
+    const members = match[2] === undefined
+      ? []
+      : match[2].split(",").map((rawMember) => {
+          const name = rawMember.trim();
+          const relativeOffset = match[2].indexOf(name, memberSearchOffset);
+          memberSearchOffset = relativeOffset + name.length;
+          return {
+            name,
+            offset: selectionOffset + relativeOffset,
+            length: name.length,
+          };
+        }).filter(({ name }) => name.length > 0);
+    return {
+      path: match[1],
+      segments: match[1].split("."),
+      alias: match[3],
+      namespace: members.length ? undefined : match[3] || match[1].split(".").at(-1),
+      members,
+      offset: match.index + match[0].indexOf(match[1]),
+      length: match[1].length,
+      statementOffset: match.index,
+      statementLength: match[0].length,
+    };
+  });
+}
+
+/** Finds module namespaces that are imported but never referenced. */
+function findUnusedImports(source) {
+  return findImports(source).flatMap((moduleImport) => {
+    const withoutDeclaration =
+      source.slice(0, moduleImport.statementOffset) +
+      source.slice(moduleImport.statementOffset + moduleImport.statementLength);
+    if (moduleImport.members.length) {
+      return moduleImport.members
+        .filter(({ name }) => !new RegExp(`\\b${name}\\b`).test(withoutDeclaration))
+        .map((member) => ({
+          ...moduleImport,
+          unusedName: member.name,
+          unusedCode: "ORNI-W002",
+          offset: member.offset,
+          length: member.length,
+        }));
+    }
+    const namespaceUse = new RegExp(`\\b${moduleImport.namespace}\\s*\\.`);
+    return namespaceUse.test(withoutDeclaration)
+      ? []
+      : [{
+          ...moduleImport,
+          unusedName: moduleImport.namespace,
+          unusedCode: "ORNI-W001",
+        }];
+  });
 }
 
 /** Finds every variable declaration in an Orni source document. */
@@ -160,7 +222,9 @@ module.exports = {
   findBoundedStringViolations,
   findBoundedVariableViolations,
   findFunctions,
+  findImports,
   findStringCapacityAnnotation,
+  findUnusedImports,
   findVariables,
   inferExpressionType,
   inferIntegerType,

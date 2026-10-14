@@ -1,0 +1,5 @@
+func status() -> string {
+    return "ready";
+}
+
+let status = "duplicate";

@@ -1,0 +1,11 @@
+let framework_name = "Orni";
+let _separator = ", ";
+
+func _normalize(name: string) -> string {
+    return name;
+}
+
+/// Creates a greeting exported by this module.
+func greet(name: string, greeting: string = "Hello") -> string {
+    return greeting + _separator + _normalize(name);
+}

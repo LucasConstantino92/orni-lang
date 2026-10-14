@@ -1,0 +1,3 @@
+func broken() -> string {
+    return missing;
+}

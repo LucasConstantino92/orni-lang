@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     diagnostics::OrniError,
     syntax::{Token, TokenKind},
@@ -9,6 +11,7 @@ pub(crate) struct Lexer {
     current: usize,
     line: usize,
     column: usize,
+    source_name: Option<Arc<str>>,
 }
 
 impl Lexer {
@@ -22,7 +25,14 @@ impl Lexer {
             current: 0,
             line: 1,
             column: 1,
+            source_name: None,
         }
+    }
+
+    /// Attaches a file name to every token for precise downstream diagnostics.
+    pub fn with_source_name(mut self, source_name: impl Into<Arc<str>>) -> Self {
+        self.source_name = Some(source_name.into());
+        self
     }
 
     /// Scans the entire source and appends a final [`TokenKind::Eof`] marker.
@@ -42,6 +52,7 @@ impl Lexer {
                 '{' => TokenKind::LeftBrace,
                 '}' => TokenKind::RightBrace,
                 ',' => TokenKind::Comma,
+                '.' => TokenKind::Dot,
                 ':' => TokenKind::Colon,
                 ';' => TokenKind::Semicolon,
                 '=' if self.matches('=') => TokenKind::EqualEqual,
@@ -76,11 +87,38 @@ impl Lexer {
                 }
             };
 
-            tokens.push(Token::new(kind, line, column));
+            tokens.push(self.token(kind, line, column, self.line, self.column));
         }
 
-        tokens.push(Token::new(TokenKind::Eof, self.line, self.column));
+        tokens.push(self.token(
+            TokenKind::Eof,
+            self.line,
+            self.column,
+            self.line,
+            self.column.saturating_add(1),
+        ));
         Ok(tokens)
+    }
+
+    fn token(
+        &self,
+        kind: TokenKind,
+        line: usize,
+        column: usize,
+        end_line: usize,
+        end_column: usize,
+    ) -> Token {
+        match &self.source_name {
+            Some(source) => {
+                Token::in_source(kind, line, column, end_line, end_column, Arc::clone(source))
+            }
+            None => {
+                let mut token = Token::new(kind, line, column);
+                token.end_line = end_line;
+                token.end_column = end_column;
+                token
+            }
+        }
     }
 
     /// Scans exactly one character after its opening quote has been consumed.
@@ -199,6 +237,9 @@ impl Lexer {
         match value.as_str() {
             "let" => TokenKind::Let,
             "func" => TokenKind::Func,
+            "pub" => TokenKind::Pub,
+            "import" => TokenKind::Import,
+            "as" => TokenKind::As,
             "print" => TokenKind::Print,
             "return" => TokenKind::Return,
             "if" => TokenKind::If,

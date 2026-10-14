@@ -5,7 +5,9 @@ const {
   findBoundedStringViolations,
   findBoundedVariableViolations,
   findFunctions,
+  findImports,
   findStringCapacityAnnotation,
+  findUnusedImports,
   findVariables,
 } = require("../language-support");
 
@@ -18,6 +20,56 @@ test("finds documented functions", () => {
   assert.equal(definition.returnType, "int");
   assert.equal(definition.documentation, "Adds two values.");
   assert.equal(source.slice(definition.offset, definition.offset + 3), "add");
+});
+
+test("finds functions and aliased dotted module imports", () => {
+  const source = "import services.greeting as welcome;\nfunc greet(name: string) -> string { return name; }";
+  const [moduleImport] = findImports(source);
+  const [definition] = findFunctions(source);
+
+  assert.deepEqual(moduleImport.segments, ["services", "greeting"]);
+  assert.equal(moduleImport.alias, "welcome");
+  assert.equal(moduleImport.namespace, "welcome");
+  assert.equal(source.slice(moduleImport.offset, moduleImport.offset + moduleImport.length), "services.greeting");
+  assert.equal(definition.name, "greet");
+});
+
+test("finds selectively imported module members", () => {
+  const source = "import services.greeting.{greet, framework_name};\nprint greet(\"Orni\");";
+  const [moduleImport] = findImports(source);
+
+  assert.equal(moduleImport.path, "services.greeting");
+  assert.equal(moduleImport.namespace, undefined);
+  assert.deepEqual(moduleImport.members.map(({ name }) => name), ["greet", "framework_name"]);
+  assert.equal(
+    source.slice(moduleImport.members[1].offset, moduleImport.members[1].offset + moduleImport.members[1].length),
+    "framework_name",
+  );
+});
+
+test("reports only module imports whose namespace is unused", () => {
+  const source = `
+import services.greeting as welcome;
+import services.logging;
+
+print welcome.greet("Orni");
+`;
+  const [unused] = findUnusedImports(source);
+
+  assert.equal(unused.namespace, "logging");
+  assert.equal(source.slice(unused.offset, unused.offset + unused.length), "services.logging");
+});
+
+test("reports each unused selectively imported member", () => {
+  const source = `
+import services.greeting.{greet, framework_name};
+print greet("Orni");
+`;
+  const [unused] = findUnusedImports(source);
+
+  assert.equal(unused.unusedCode, "ORNI-W002");
+  assert.equal(unused.unusedName, "framework_name");
+  assert.equal(source.slice(unused.offset, unused.offset + unused.length), "framework_name");
 });
 
 test("finds the closest preceding variable", () => {

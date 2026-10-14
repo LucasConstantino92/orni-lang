@@ -1,0 +1,5 @@
+import private.{visible};
+
+func visible() -> string {
+    return "local";
+}

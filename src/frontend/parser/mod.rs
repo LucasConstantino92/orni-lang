@@ -74,7 +74,10 @@ impl Parser {
 
     /// Creates a syntax error positioned at the current token.
     fn error_at_current(&self, message: impl Into<String>) -> OrniError {
-        let token = self.peek();
-        OrniError::syntax(token.line, token.column, message)
+        syntax_error(self.peek(), message)
     }
+}
+
+fn syntax_error(token: &Token, message: impl Into<String>) -> OrniError {
+    OrniError::syntax(token.line, token.column, message).with_token(token)
 }

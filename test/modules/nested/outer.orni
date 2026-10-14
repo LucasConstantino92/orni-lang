@@ -1,0 +1,5 @@
+import inner;
+
+func visible() -> string {
+    return inner.visible();
+}

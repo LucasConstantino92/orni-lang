@@ -3,7 +3,7 @@ use crate::{
     syntax::{Expression, IntegerType, TokenKind, Value},
 };
 
-use super::Parser;
+use super::{Parser, syntax_error};
 
 impl Parser {
     /// Parses an expression starting at the lowest supported precedence.
@@ -96,7 +96,34 @@ impl Parser {
     fn call(&mut self) -> Result<Expression, OrniError> {
         let mut expression = self.primary()?;
 
-        while self.matches(|kind| matches!(kind, TokenKind::LeftParen)) {
+        loop {
+            if self.matches(|kind| matches!(kind, TokenKind::Dot)) {
+                let member = self.consume(
+                    |kind| matches!(kind, TokenKind::Identifier(_)),
+                    "expected a member name after '.'",
+                )?;
+                let Expression::Variable(mut namespace) = expression else {
+                    return Err(syntax_error(
+                        &member,
+                        "only module namespaces support member access",
+                    ));
+                };
+                let TokenKind::Identifier(namespace_name) = &mut namespace.kind else {
+                    unreachable!("variable expressions contain identifiers")
+                };
+                let TokenKind::Identifier(member_name) = member.kind else {
+                    unreachable!("the member token was validated")
+                };
+                namespace_name.push('.');
+                namespace_name.push_str(&member_name);
+                namespace.end_line = member.end_line;
+                namespace.end_column = member.end_column;
+                expression = Expression::Variable(namespace);
+                continue;
+            }
+            if !self.matches(|kind| matches!(kind, TokenKind::LeftParen)) {
+                break;
+            }
             let mut arguments = Vec::new();
             if !matches!(self.peek().kind, TokenKind::RightParen) {
                 loop {
@@ -142,11 +169,7 @@ impl Parser {
                 )?;
                 Ok(Expression::Grouping(Box::new(expression)))
             }
-            _ => Err(OrniError::syntax(
-                token.line,
-                token.column,
-                "expected an expression",
-            )),
+            _ => Err(syntax_error(&token, "expected an expression")),
         }
     }
 }

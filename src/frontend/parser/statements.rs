@@ -3,11 +3,21 @@ use crate::{
     syntax::{IntegerType, Parameter, Statement, TokenKind, TypeName},
 };
 
-use super::Parser;
+use super::{Parser, syntax_error};
 
 impl Parser {
     /// Parses the next statement by inspecting its leading token.
     pub(super) fn statement(&mut self) -> Result<Statement, OrniError> {
+        if self.matches(|kind| matches!(kind, TokenKind::Import)) {
+            return self.import_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Pub)) {
+            let token = self.previous();
+            return Err(syntax_error(
+                token,
+                "'pub' is unnecessary; module declarations are public unless their name starts with '_'",
+            ));
+        }
         if self.matches(|kind| matches!(kind, TokenKind::Func)) {
             return self.function_statement();
         }
@@ -59,9 +69,8 @@ impl Parser {
                     Some(self.expression()?)
                 } else {
                     if found_default {
-                        return Err(OrniError::syntax(
-                            parameter_name.line,
-                            parameter_name.column,
+                        return Err(syntax_error(
+                            &parameter_name,
                             "required parameters cannot follow optional parameters",
                         ));
                     }
@@ -101,6 +110,66 @@ impl Parser {
         })
     }
 
+    /// Parses a dotted module path such as `services.greeting`.
+    fn import_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
+        let mut path = vec![self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a module path after 'import'",
+        )?];
+        let mut members = None;
+        while self.matches(|kind| matches!(kind, TokenKind::Dot)) {
+            if self.matches(|kind| matches!(kind, TokenKind::LeftBrace)) {
+                let mut selected = Vec::new();
+                loop {
+                    selected.push(self.consume(
+                        |kind| matches!(kind, TokenKind::Identifier(_)),
+                        "expected a public member in the selective import",
+                    )?);
+                    if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
+                        break;
+                    }
+                }
+                self.consume(
+                    |kind| matches!(kind, TokenKind::RightBrace),
+                    "expected '}' after the selected members",
+                )?;
+                members = Some(selected);
+                break;
+            }
+            path.push(self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_)),
+                "expected a module name or '{' after '.'",
+            )?);
+        }
+        let alias = if self.matches(|kind| matches!(kind, TokenKind::As)) {
+            Some(self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_)),
+                "expected a namespace after 'as'",
+            )?)
+        } else {
+            None
+        };
+        if members.is_some()
+            && let Some(alias) = &alias
+        {
+            return Err(syntax_error(
+                alias,
+                "selective imports cannot also declare a namespace alias",
+            ));
+        }
+        self.consume(
+            |kind| matches!(kind, TokenKind::Semicolon),
+            "expected ';' after the import",
+        )?;
+        Ok(Statement::Import {
+            keyword,
+            path,
+            alias,
+            members,
+        })
+    }
+
     /// Parses one of Orni's built-in type names.
     fn type_name(&mut self) -> Result<TypeName, OrniError> {
         let token = self.consume(
@@ -130,9 +199,8 @@ impl Parser {
                         unreachable!("the string size was validated as an integer")
                     };
                     if *size <= 0 || *size > usize::MAX as i128 {
-                        return Err(OrniError::syntax(
-                            size_token.line,
-                            size_token.column,
+                        return Err(syntax_error(
+                            &size_token,
                             "string capacity must be a positive platform-sized integer",
                         ));
                     }
@@ -149,11 +217,7 @@ impl Parser {
             "bool" => Ok(TypeName::Bool),
             "char" => Ok(TypeName::Char),
             "unit" => Ok(TypeName::Unit),
-            _ => Err(OrniError::syntax(
-                token.line,
-                token.column,
-                format!("unknown type '{name}'"),
-            )),
+            _ => Err(syntax_error(&token, format!("unknown type '{name}'"))),
         }
     }
 

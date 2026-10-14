@@ -1,11 +1,15 @@
 const vscode = require("vscode");
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   findClosestDeclaration,
   findBoundedStringViolations,
   findBoundedVariableViolations,
   findFunctions,
+  findImports,
   findStringCapacityAnnotation,
+  findUnusedImports,
   findVariables,
   identifierPattern,
 } = require("./language-support");
@@ -41,6 +45,8 @@ const keywordDocumentation = {
   else: "Provides the branch executed when an `if` condition is `false`.",
   true: "The boolean true value.",
   false: "The boolean false value.",
+  import: "Loads public functions and values through a module namespace.",
+  as: "Assigns a local namespace alias to an imported module.",
 };
 
 const primitiveTypes = {
@@ -54,6 +60,7 @@ const primitiveTypes = {
 
 const diagnosticTimers = new Map();
 const diagnosticProcesses = new Map();
+const compilerDiagnosticUris = new Map();
 
 /** Returns the identifier and range under the cursor. */
 function symbolAt(document, position) {
@@ -220,31 +227,76 @@ function inlayHintsFor(document, range) {
 }
 
 /** Converts a compiler diagnostic into an editor marker. */
-function diagnosticFromCompiler(document, output) {
-  const match = output.match(
-    /(?:Lexical|Syntax|Semantic) error at line (\d+), column (\d+): ([^\r\n]+)/,
-  );
-  if (!match) return [];
+function diagnosticFromCompiler(document, folder, output) {
+  const pattern = /(?:Lexical|Syntax|Semantic|Runtime|Module) (error|warning) \[(ORNI-[A-Z]\d+)\](?: in '([^']+)')? at line (\d+), column (\d+) to line (\d+), column (\d+): ([^\r\n]+)/g;
+  return Array.from(output.matchAll(pattern), (match) => {
+    const sourcePath = match[3]
+      ? path.resolve(folder.uri.fsPath, match[3])
+      : document.uri.fsPath;
+    const uri = vscode.Uri.file(sourcePath);
+    let lines;
+    try {
+      lines = sourcePath === document.uri.fsPath
+        ? document.getText().split(/\r?\n/)
+        : fs.readFileSync(sourcePath, "utf8").split(/\r?\n/);
+    } catch {
+      lines = document.getText().split(/\r?\n/);
+    }
+    const startLine = Math.min(Number(match[4]) - 1, Math.max(0, lines.length - 1));
+    const endLine = Math.min(Number(match[6]) - 1, Math.max(0, lines.length - 1));
+    const startColumn = Math.min(Number(match[5]) - 1, (lines[startLine] || "").length);
+    const endColumn = Math.min(Number(match[7]) - 1, (lines[endLine] || "").length);
+    const diagnostic = new vscode.Diagnostic(
+      new vscode.Range(
+        startLine,
+        startColumn,
+        endLine,
+        startLine === endLine ? Math.max(startColumn + 1, endColumn) : endColumn,
+      ),
+      match[8],
+      match[1] === "warning"
+        ? vscode.DiagnosticSeverity.Warning
+        : vscode.DiagnosticSeverity.Error,
+    );
+    diagnostic.source = "Orni compiler";
+    diagnostic.code = /expects string<\d+>, but found string<\d+>/.test(match[8])
+      ? "orni.stringCapacity"
+      : match[2];
+    return { uri, diagnostic };
+  });
+}
 
-  const line = Math.min(Number(match[1]) - 1, Math.max(0, document.lineCount - 1));
-  const lineText = document.lineAt(line).text;
-  const column = Math.min(Number(match[2]) - 1, lineText.length);
-  const end = Math.min(column + 1, lineText.length);
-  const diagnostic = new vscode.Diagnostic(
-    new vscode.Range(line, column, line, end),
-    match[3],
-    vscode.DiagnosticSeverity.Error,
-  );
-  diagnostic.source = "Orni compiler";
-  if (/expects string<\d+>, but found string<\d+>/.test(match[3])) {
-    diagnostic.code = "orni.stringCapacity";
+/** Publishes compiler diagnostics grouped by their source file. */
+function setExternalCompilerDiagnostics(collection, entries, excludedUri) {
+  const grouped = new Map();
+  for (const { uri, diagnostic } of entries) {
+    if (uri.toString() === excludedUri.toString()) continue;
+    const key = uri.toString();
+    const group = grouped.get(key) || { uri, diagnostics: [] };
+    group.diagnostics.push(diagnostic);
+    grouped.set(key, group);
   }
-  return [diagnostic];
+  for (const group of grouped.values()) {
+    collection.set(group.uri, group.diagnostics);
+  }
 }
 
 /** Produces fast non-blocking warnings without invoking the compiler. */
 function lintDiagnostics(document) {
   const source = document.getText();
+  const unusedImports = findUnusedImports(source).map((moduleImport) => {
+    const start = document.positionAt(moduleImport.offset);
+    const diagnostic = new vscode.Diagnostic(
+      new vscode.Range(start, start.translate(0, moduleImport.length)),
+      moduleImport.unusedCode === "ORNI-W002"
+        ? `Selectively imported member '${moduleImport.unusedName}' is never used.`
+        : `Module namespace '${moduleImport.unusedName}' is imported but never used.`,
+      vscode.DiagnosticSeverity.Warning,
+    );
+    diagnostic.source = "Orni lint";
+    diagnostic.code = moduleImport.unusedCode;
+    return diagnostic;
+  });
   const unusedVariables = findVariables(source).flatMap((variable) => {
     if (variable.name.startsWith("_")) return [];
     const uses = source.match(new RegExp(`\\b${variable.name}\\b`, "g")) || [];
@@ -283,7 +335,7 @@ function lintDiagnostics(document) {
     diagnostic.code = "orni.stringCapacity";
     return diagnostic;
   });
-  return [...boundedVariables, ...boundedStrings, ...unusedVariables];
+  return [...boundedVariables, ...boundedStrings, ...unusedImports, ...unusedVariables];
 }
 
 /** Creates context-aware fixes shown by the editor's Ctrl+. menu. */
@@ -340,9 +392,150 @@ function codeActionsFor(document, context) {
       prefix.isPreferred = true;
       actions.push(prefix);
     }
+
+    if (diagnostic.code === "ORNI-W001" || diagnostic.code === "ORNI-W002") {
+      const moduleImport = findImports(source).find((candidate) => {
+        return document.positionAt(candidate.statementOffset).line === diagnostic.range.start.line;
+      });
+      if (!moduleImport) continue;
+      const selectedMember = moduleImport.members.find(
+        ({ offset }) => document.positionAt(offset).line === diagnostic.range.start.line
+          && diagnostic.range.contains(document.positionAt(offset)),
+      );
+      if (diagnostic.code === "ORNI-W002" && selectedMember && moduleImport.members.length > 1) {
+        const memberIndex = moduleImport.members.indexOf(selectedMember);
+        const nextMember = moduleImport.members[memberIndex + 1];
+        const previousMember = moduleImport.members[memberIndex - 1];
+        const removalStart = nextMember
+          ? selectedMember.offset
+          : previousMember.offset + previousMember.length;
+        const removalEnd = nextMember
+          ? nextMember.offset
+          : selectedMember.offset + selectedMember.length;
+        const removeMember = new vscode.CodeAction(
+          `Remove unused imported member '${selectedMember.name}'`,
+          vscode.CodeActionKind.QuickFix,
+        );
+        removeMember.edit = new vscode.WorkspaceEdit();
+        removeMember.edit.delete(
+          document.uri,
+          new vscode.Range(
+            document.positionAt(removalStart),
+            document.positionAt(removalEnd),
+          ),
+        );
+        removeMember.diagnostics = [diagnostic];
+        removeMember.isPreferred = true;
+        actions.push(removeMember);
+        continue;
+      }
+      let endOffset = moduleImport.statementOffset + moduleImport.statementLength;
+      if (source.slice(endOffset, endOffset + 2) === "\r\n") endOffset += 2;
+      else if (source[endOffset] === "\n") endOffset += 1;
+      const remove = new vscode.CodeAction(
+        `Remove unused import '${selectedMember?.name || moduleImport.namespace}'`,
+        vscode.CodeActionKind.QuickFix,
+      );
+      remove.edit = new vscode.WorkspaceEdit();
+      remove.edit.delete(
+        document.uri,
+        new vscode.Range(
+          document.positionAt(moduleImport.statementOffset),
+          document.positionAt(endOffset),
+        ),
+      );
+      remove.diagnostics = [diagnostic];
+      remove.isPreferred = true;
+      actions.push(remove);
+    }
   }
 
+  const checkModule = new vscode.CodeAction(
+    "Check this file as a reusable Orni module",
+    vscode.CodeActionKind.Source,
+  );
+  checkModule.command = {
+    command: "orni.checkModule",
+    title: checkModule.title,
+    arguments: [document.uri],
+  };
+  actions.push(checkModule);
+
   return actions;
+}
+
+/** Checks one saved file using the stricter reusable-module rules. */
+async function checkModuleFromEditor(uri, diagnostics) {
+  if (!uri) return;
+  const document = await vscode.workspace.openTextDocument(uri);
+  if (document.isDirty && !(await document.save())) return;
+  const diagnosticKey = document.uri.toString();
+  clearTimeout(diagnosticTimers.get(diagnosticKey));
+  diagnosticTimers.delete(diagnosticKey);
+  diagnosticProcesses.get(diagnosticKey)?.kill();
+  const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+  if (!folder) {
+    vscode.window.showWarningMessage("Open the Orni project folder before checking a module.");
+    return;
+  }
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `Checking Orni module ${path.basename(document.uri.fsPath)}`,
+    },
+    () => new Promise((resolve) => {
+      const modulePath = path
+        .relative(folder.uri.fsPath, document.uri.fsPath)
+        .split(path.sep)
+        .join("/");
+      const process = spawn(
+        "cargo",
+        ["run", "--quiet", "--target", "wasm32-wasip1", "--", "--check-module", modulePath],
+        { cwd: folder.uri.fsPath, windowsHide: true },
+      );
+      let output = "";
+      let failedToStart = false;
+      process.stdout.on("data", (chunk) => (output += chunk));
+      process.stderr.on("data", (chunk) => (output += chunk));
+      process.on("error", (error) => {
+        failedToStart = true;
+        vscode.window.showErrorMessage(`Could not start the Orni checker: ${error.message}`);
+        resolve();
+      });
+      process.on("close", (code) => {
+        if (failedToStart) return;
+        const entries = diagnosticFromCompiler(document, folder, output);
+        if (code === 0) {
+          const localDiagnostics = lintDiagnostics(document);
+          const compilerDiagnostics = entries
+            .filter(({ uri: target }) => target.toString() === document.uri.toString())
+            .map(({ diagnostic }) => diagnostic)
+            .filter(
+              (compilerDiagnostic) =>
+                !localDiagnostics.some(
+                  (localDiagnostic) => localDiagnostic.code === compilerDiagnostic.code,
+                ),
+            );
+          diagnostics.set(document.uri, [...compilerDiagnostics, ...localDiagnostics]);
+          setExternalCompilerDiagnostics(diagnostics, entries, document.uri);
+          vscode.window.showInformationMessage(
+            `${path.basename(document.uri.fsPath)} is a valid reusable Orni module${entries.length ? ` with ${entries.length} warning(s)` : ""}.`,
+          );
+        } else {
+          const current = entries
+            .filter(({ uri: target }) => target.toString() === document.uri.toString())
+            .map(({ diagnostic }) => diagnostic);
+          if (current.length) diagnostics.set(document.uri, current);
+          setExternalCompilerDiagnostics(diagnostics, entries, document.uri);
+          vscode.window.showErrorMessage(
+            entries[0]?.diagnostic.message || "The Orni module check failed.",
+          );
+        }
+        resolve();
+      });
+    }),
+  );
 }
 
 /** Checks the current in-memory source without executing its program. */
@@ -352,12 +545,29 @@ function updateDiagnostics(document, diagnostics) {
   diagnostics.set(document.uri, localDiagnostics);
   const folder = vscode.workspace.getWorkspaceFolder(document.uri);
   if (!folder) return;
+  const hasImports = findImports(document.getText()).length > 0;
+  if (hasImports && document.isDirty) return;
 
   const key = document.uri.toString();
+  for (const uri of compilerDiagnosticUris.get(key) || []) {
+    if (uri.toString() !== document.uri.toString()) diagnostics.delete(uri);
+  }
+  compilerDiagnosticUris.delete(key);
   diagnosticProcesses.get(key)?.kill();
+  const compilerArguments = hasImports
+    ? [
+        "run",
+        "--quiet",
+        "--target",
+        "wasm32-wasip1",
+        "--",
+        "--check",
+        path.relative(folder.uri.fsPath, document.uri.fsPath).split(path.sep).join("/"),
+      ]
+    : ["run", "--quiet", "--target", "wasm32-wasip1", "--", "--check-stdin"];
   const process = spawn(
     "cargo",
-    ["run", "--quiet", "--target", "wasm32-wasip1", "--", "--check-stdin"],
+    compilerArguments,
     { cwd: folder.uri.fsPath, windowsHide: true },
   );
   diagnosticProcesses.set(key, process);
@@ -372,8 +582,11 @@ function updateDiagnostics(document, diagnostics) {
   process.on("close", (code) => {
     if (diagnosticProcesses.get(key) !== process) return;
     diagnosticProcesses.delete(key);
-    const compilerDiagnostics = code === 0 ? [] : diagnosticFromCompiler(document, output);
-    const compilerOnly = compilerDiagnostics.filter(
+    const compilerEntries = diagnosticFromCompiler(document, folder, output);
+    const currentEntries = compilerEntries.filter(
+      ({ uri }) => uri.toString() === document.uri.toString(),
+    );
+    const compilerOnly = currentEntries.map(({ diagnostic }) => diagnostic).filter(
       (compilerDiagnostic) =>
         !localDiagnostics.some(
           (localDiagnostic) =>
@@ -381,8 +594,10 @@ function updateDiagnostics(document, diagnostics) {
         ),
     );
     diagnostics.set(document.uri, [...compilerOnly, ...localDiagnostics]);
+    setExternalCompilerDiagnostics(diagnostics, compilerEntries, document.uri);
+    compilerDiagnosticUris.set(key, new Set(compilerEntries.map(({ uri }) => uri)));
   });
-  process.stdin.end(document.getText());
+  process.stdin.end(hasImports ? undefined : document.getText());
 }
 
 /** Schedules diagnostics shortly after an Orni document changes. */
@@ -408,12 +623,148 @@ async function definitionFor(document, position) {
 
   const source = document.getText();
   const usageOffset = document.offsetAt(position);
+  const moduleImport = findImports(source).find(
+    (candidate) =>
+      usageOffset >= candidate.offset &&
+      usageOffset <= candidate.offset + candidate.length,
+  );
+  if (moduleImport) {
+    const modulePath = path.join(
+      path.dirname(document.uri.fsPath),
+      ...moduleImport.segments,
+    ) + ".orni";
+    return new vscode.Location(vscode.Uri.file(modulePath), new vscode.Position(0, 0));
+  }
+  const selectedImport = findImports(source).find((candidate) =>
+    candidate.members.some(
+      ({ offset, length }) => usageOffset >= offset && usageOffset <= offset + length,
+    ),
+  );
+  const selectedName = selectedImport?.members.find(
+    ({ offset, length }) => usageOffset >= offset && usageOffset <= offset + length,
+  )?.name;
+  if (selectedImport && selectedName) {
+    const location = await importedMemberLocation(document, selectedImport, selectedName);
+    if (location) return location;
+  }
+  const qualifiedRange = document.getWordRangeAtPosition(
+    position,
+    /[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+/,
+  );
+  if (qualifiedRange) {
+    const [namespace, member] = document.getText(qualifiedRange).split(".");
+    const imported = findImports(source).find(
+      (candidate) => candidate.namespace === namespace,
+    );
+    if (imported && member) {
+      const modulePath = path.join(
+        path.dirname(document.uri.fsPath),
+        ...imported.segments,
+      ) + ".orni";
+      try {
+        const moduleDocument = await vscode.workspace.openTextDocument(modulePath);
+        const moduleSource = moduleDocument.getText();
+        const declaration =
+          findFunctions(moduleSource).find(({ name }) => name === member) ||
+          findVariables(moduleSource).find(({ name }) => name === member);
+        if (declaration && !member.startsWith("_")) {
+          return new vscode.Location(
+            moduleDocument.uri,
+            moduleDocument.positionAt(declaration.offset),
+          );
+        }
+      } catch {
+        return undefined;
+      }
+    }
+  }
   const declaration =
     findClosestDeclaration(findFunctions(source), symbol.name, usageOffset) ||
     findClosestDeclaration(findVariables(source), symbol.name, usageOffset);
 
-  if (!declaration) return undefined;
-  return new vscode.Location(document.uri, document.positionAt(declaration.offset));
+  if (declaration) {
+    return new vscode.Location(document.uri, document.positionAt(declaration.offset));
+  }
+  const directImport = findImports(source).find((candidate) =>
+    candidate.members.some(({ name }) => name === symbol.name),
+  );
+  return directImport
+    ? importedMemberLocation(document, directImport, symbol.name)
+    : undefined;
+}
+
+/** Resolves one public member inside the module named by an import. */
+async function importedMemberLocation(importingDocument, moduleImport, memberName) {
+  const modulePath = path.join(
+    path.dirname(importingDocument.uri.fsPath),
+    ...moduleImport.segments,
+  ) + ".orni";
+  try {
+    const moduleDocument = await vscode.workspace.openTextDocument(modulePath);
+    const declaration =
+      findFunctions(moduleDocument.getText()).find(({ name }) => name === memberName) ||
+      findVariables(moduleDocument.getText()).find(({ name }) => name === memberName);
+    return declaration && !memberName.startsWith("_")
+      ? new vscode.Location(moduleDocument.uri, moduleDocument.positionAt(declaration.offset))
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Completes public members after an imported module namespace. */
+async function moduleCompletionsFor(document, position) {
+  const prefix = document.getText(
+    new vscode.Range(new vscode.Position(position.line, 0), position),
+  );
+  const access = prefix.match(/([A-Za-z_][A-Za-z0-9_]*)\.$/);
+  if (!access) {
+    const selectedMembers = findImports(document.getText()).flatMap((moduleImport) =>
+      moduleImport.members.map(({ name }) => {
+        const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Reference);
+        item.detail = `Imported from ${moduleImport.path}`;
+        return item;
+      }),
+    );
+    return selectedMembers.length ? selectedMembers : undefined;
+  }
+  const imported = findImports(document.getText()).find(
+    (candidate) => !candidate.members.length && candidate.namespace === access[1],
+  );
+  if (!imported) return undefined;
+
+  const modulePath = path.join(
+    path.dirname(document.uri.fsPath),
+    ...imported.segments,
+  ) + ".orni";
+  try {
+    const moduleDocument = await vscode.workspace.openTextDocument(modulePath);
+    const source = moduleDocument.getText();
+    const functions = findFunctions(source)
+      .filter(({ name }) => !name.startsWith("_"))
+      .map((declaration) => {
+        const item = new vscode.CompletionItem(
+          declaration.name,
+          vscode.CompletionItemKind.Function,
+        );
+        item.detail = `func ${declaration.name}(${declaration.parameters.join(", ")}) -> ${declaration.returnType}`;
+        item.documentation = declaration.documentation || undefined;
+        return item;
+      });
+    const variables = findVariables(source)
+      .filter(({ name }) => !name.startsWith("_"))
+      .map((declaration) => {
+        const item = new vscode.CompletionItem(
+          declaration.name,
+          vscode.CompletionItemKind.Variable,
+        );
+        item.detail = declaration.typeName || declaration.inferredType || "inferred value";
+        return item;
+      });
+    return [...functions, ...variables];
+  } catch {
+    return undefined;
+  }
 }
 
 /** Activates semantic navigation and documentation for Orni files. */
@@ -432,7 +783,13 @@ function activate(context) {
     vscode.languages.registerCodeActionsProvider(
       selector,
       { provideCodeActions: (_document, _range, context) => codeActionsFor(_document, context) },
-      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] },
+      { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.Source] },
+    ),
+    vscode.commands.registerCommand("orni.checkModule", (uri) =>
+      checkModuleFromEditor(
+        uri || vscode.window.activeTextEditor?.document.uri,
+        diagnostics,
+      ),
     ),
     vscode.languages.registerSignatureHelpProvider(
       selector,
@@ -443,6 +800,11 @@ function activate(context) {
     vscode.languages.registerInlayHintsProvider(selector, {
       provideInlayHints: inlayHintsFor,
     }),
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      { provideCompletionItems: moduleCompletionsFor },
+      ".",
+    ),
     vscode.workspace.onDidSaveTextDocument((document) =>
       scheduleDiagnostics(document, diagnostics),
     ),

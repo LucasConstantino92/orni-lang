@@ -50,7 +50,7 @@ The current foundation focuses on:
 - checked arithmetic and conversions;
 - lexical scopes backed by Rust ownership;
 - configurable runtime resource limits;
-- useful errors with source line and column information;
+- structured diagnostics with stable codes, severity, source paths, and ranges;
 - first-class editor support for `.orni` files.
 
 ## A first Orni program
@@ -156,6 +156,96 @@ Applications embedding Orni can apply stricter boundaries through the public
 `run_with_limits` Rust API. These protections limit resource exhaustion; real
 production workloads should still be measured and profiled.
 
+## Modules
+
+Applications can split functions and read-only module values across `.orni`
+files. Imports use a dotted path relative to the file that declares them:
+
+```orni
+// services/greeting.orni
+let framework_name = "Orni";
+let _separator = ", ";
+
+func _normalize(name: string) -> string {
+    return name;
+}
+
+func greet(name: string) -> string {
+    return "Hello" + _separator + _normalize(name);
+}
+```
+
+```orni
+// main.orni
+import services.greeting as welcome;
+
+print welcome.greet("Orni");
+print welcome.framework_name;
+```
+
+Public members can also be selected explicitly and used without a namespace:
+
+```orni
+import services.greeting.{greet, framework_name};
+
+print greet("Orni");
+print framework_name;
+```
+
+Selective imports cannot include underscore-prefixed private members or be
+combined with `as`. Every selected name must exist in the direct module API and
+must not conflict with another declaration or imported name in the same file.
+
+The resolver loads imports recursively, deduplicates repeated modules, and
+rejects circular dependencies, duplicate declarations, and namespace
+collisions. Declarations are public by default. A name that starts with `_` is
+private to its module and cannot be accessed through an import, including
+through nested namespaces. Regular imports use a namespace, and `as` can choose
+its local name; selective imports place only their listed public members in the
+local scope. Imported files may contain imports, functions, and immutable
+module variables; executable statements remain exclusive to the entry file.
+Diagnostics preserve the exact source module so the editor can open the
+failing file directly from the Problems panel.
+
+Check a reusable module independently from an executable entry file:
+
+```sh
+cargo run -- --check-module examples/modules/greeting.orni
+```
+
+This stricter check rejects executable top-level statements. In the editor,
+the same action is available as **Orni: Check Current File as Module** through
+`Ctrl+.` and the Command Palette. Unused module imports are reported as
+warnings and can be removed with a Quick Fix.
+
+## Diagnostics
+
+Orni diagnostics are structured values exposed through the Rust API. Each one
+contains a stable code, severity, phase, optional source path, complete source
+range, and human-readable message. Independent semantic errors are collected
+in one analysis pass so fixing one issue does not immediately reveal another.
+
+```text
+Semantic error [ORNI-T001] at line 1, column 7 to line 1, column 20: undefined variable 'first_missing'
+Semantic error [ORNI-T001] at line 2, column 7 to line 2, column 21: undefined variable 'second_missing'
+```
+
+Current diagnostic families:
+
+| Code | Meaning |
+|---|---|
+| `ORNI-L001` | Lexical error |
+| `ORNI-S001` | Syntax error |
+| `ORNI-T001` | Type or name analysis error |
+| `ORNI-M001` | Module graph or visibility error |
+| `ORNI-R001` | Runtime safety error |
+| `ORNI-W001` | Unused module import warning |
+| `ORNI-W002` | Unused selectively imported member warning |
+
+Embedding applications can call `diagnose_file` or `diagnose_module` to read
+non-fatal diagnostics. Failed checks expose every collected error through
+`OrniError::diagnostics()`.
+
 ## Quick start
 
 ### Requirements
@@ -196,6 +286,8 @@ cargo run --target wasm32-wasip1 -- --check playground/main.orni
 | [`02_functions.orni`](examples/02_functions.orni) | Functions, parameters, and return values |
 | [`03_conditionals.orni`](examples/03_conditionals.orni) | Comparisons, branches, and block scopes |
 | [`04_type_safety.orni`](examples/04_type_safety.orni) | Inference, bounded types, defaults, and documentation |
+| [`05_modules.orni`](examples/05_modules.orni) | Namespaces, aliases, public values, and private helpers |
+| [`06_selective_imports.orni`](examples/06_selective_imports.orni) | Public members imported directly into the local scope |
 
 ### Learn from failures
 
@@ -232,6 +324,8 @@ Visual Studio Code, and compatible editors. It currently provides:
 - inline type hints for inferred variables;
 - function signature help;
 - Ctrl+Click navigation to declarations;
+- Ctrl+Click navigation from imports to their `.orni` module;
+- Ctrl+Click navigation and completion for namespaced module members;
 - Ctrl+Click navigation from language built-ins to their Rust implementation.
 
 Package the local extension:
@@ -286,7 +380,7 @@ Orni source (.orni)
 
 | Path | Responsibility |
 | --- | --- |
-| `src/frontend` | Lexing, parsing, and semantic type checking |
+| `src/frontend` | Lexing, parsing, module loading, and semantic type checking |
 | `src/syntax` | Tokens, values, and abstract syntax tree nodes |
 | `src/runtime` | Environments, resource limits, and interpretation |
 | `src/diagnostics.rs` | Errors shared by every compilation stage |
@@ -301,7 +395,7 @@ Orni source (.orni)
 - [x] Smart literal and function-call string inference
 - [x] Live editor diagnostics, hover information, and navigation
 - [x] Runtime memory, recursion, output, and execution-fuel boundaries
-- [ ] Modules and imports
+- [x] Namespaced modules, aliases, underscore privacy, and cycle detection
 - [ ] Contracts, providers, and dependency injection syntax
 - [ ] Standard-library adapter model
 - [ ] PostgreSQL adapter with visible, explicit SQL

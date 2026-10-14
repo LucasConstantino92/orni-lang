@@ -1,0 +1,3 @@
+import nested.outer;
+
+print outer.inner._hidden();

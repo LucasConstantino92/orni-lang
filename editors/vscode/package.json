@@ -2,7 +2,7 @@
   "name": "orni-language",
   "displayName": "Orni Language",
   "description": "Language support for the Orni programming language.",
-  "version": "0.6.2",
+  "version": "0.7.5",
   "publisher": "orni-lang",
   "engines": {
     "vscode": ">=1.80.0"
@@ -20,6 +20,12 @@
   "main": "./extension.js",
   "activationEvents": ["onLanguage:orni"],
   "contributes": {
+    "commands": [
+      {
+        "command": "orni.checkModule",
+        "title": "Orni: Check Current File as Module"
+      }
+    ],
     "languages": [
       {
         "id": "orni",

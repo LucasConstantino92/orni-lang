@@ -9,6 +9,7 @@
     { "include": "#numbers" },
     { "include": "#types" },
     { "include": "#functionDeclarations" },
+    { "include": "#selectiveImports" },
     { "include": "#keywords" },
     { "include": "#constants" },
     { "include": "#operators" },
@@ -73,11 +74,22 @@
         }
       ]
     },
+    "selectiveImports": {
+      "patterns": [
+        {
+          "name": "meta.import.selective.orni",
+          "match": "(?<=\\{|,)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(?=,|\\})",
+          "captures": {
+            "1": { "name": "variable.other.import.orni" }
+          }
+        }
+      ]
+    },
     "keywords": {
       "patterns": [
         {
           "name": "keyword.control.orni",
-          "match": "\\b(?:if|else|return)\\b"
+          "match": "\\b(?:if|else|return|import|as)\\b"
         },
         {
           "name": "storage.type.orni",

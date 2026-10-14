@@ -9,7 +9,8 @@ use super::{FunctionSignature, TypeChecker, identifier_name, semantic_error, sta
 
 impl TypeChecker {
     /// Makes top-level functions visible to each other before bodies are checked.
-    pub(super) fn declare_functions(&mut self, statements: &[Statement]) -> Result<(), OrniError> {
+    pub(super) fn declare_functions(&mut self, statements: &[Statement]) -> Vec<OrniError> {
+        let mut errors = Vec::new();
         for statement in statements {
             if let Statement::Function {
                 name,
@@ -21,10 +22,11 @@ impl TypeChecker {
             {
                 let function_name = identifier_name(name);
                 if self.functions.contains_key(function_name) {
-                    return Err(semantic_error(
+                    errors.push(semantic_error(
                         name,
                         &format!("function '{function_name}' is already declared"),
                     ));
+                    continue;
                 }
                 self.functions.insert(
                     function_name.to_owned(),
@@ -36,12 +38,18 @@ impl TypeChecker {
                 );
             }
         }
-        Ok(())
+        errors
     }
 
     /// Checks one statement and any nested expressions or statements.
     pub(super) fn check_statement(&mut self, statement: &Statement) -> Result<(), OrniError> {
         match statement {
+            Statement::Import { keyword, .. } => {
+                return Err(semantic_error(
+                    keyword,
+                    "imports require a file-based check or run",
+                ));
+            }
             Statement::Let {
                 name,
                 declared_type,
@@ -63,6 +71,7 @@ impl TypeChecker {
                 parameters,
                 return_type,
                 body,
+                ..
             } => self.check_function(name, parameters, *return_type, body)?,
             Statement::Print { expression, .. } | Statement::Expression(expression) => {
                 self.expression_type(expression)?;

@@ -1,0 +1,6 @@
+// Stage 6: import only the public module members used by this file.
+
+import modules.greeting.{greet, framework_name};
+
+print greet("Orni");
+print framework_name;

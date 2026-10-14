@@ -1,0 +1,7 @@
+// Stage 5: namespaces, aliases, public values, and private helpers.
+
+import modules.greeting as welcome;
+
+print welcome.greet("Orni");
+print welcome.greet("Framework", "Welcome to the");
+print welcome.framework_name;

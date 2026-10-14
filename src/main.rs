@@ -1,6 +1,18 @@
-use std::{env, fs, io, io::Read, process};
+use std::{env, io, io::Read, process};
 
-use orni::{check, run};
+use orni::{OrniDiagnostic, check, diagnose_file, diagnose_module, run_file};
+
+fn format_diagnostics(diagnostics: &[OrniDiagnostic]) -> String {
+    let mut output = diagnostics
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
+}
 
 fn main() {
     let mut args = env::args();
@@ -8,11 +20,11 @@ fn main() {
 
     let arguments: Vec<_> = args.collect();
     if arguments.is_empty() {
-        eprintln!("Usage: {executable} [--check] <file.orni> | --check-stdin");
+        eprintln!("Usage: {executable} [--check | --check-module] <file.orni> | --check-stdin");
         process::exit(2);
     }
 
-    let (source, check_only) = match arguments.as_slice() {
+    let result = match arguments.as_slice() {
         [flag] if flag == "--check-stdin" => {
             let mut source = String::new();
             io::stdin()
@@ -21,20 +33,19 @@ fn main() {
                     eprintln!("Could not read standard input: {error}");
                     process::exit(1);
                 });
-            (source, true)
+            check(&source).map(|()| String::new())
         }
-        [flag, path] if flag == "--check" => (read_source(path), true),
-        [path] => (read_source(path), false),
+        [flag, path] if flag == "--check" => {
+            diagnose_file(path).map(|diagnostics| format_diagnostics(&diagnostics))
+        }
+        [flag, path] if flag == "--check-module" => {
+            diagnose_module(path).map(|diagnostics| format_diagnostics(&diagnostics))
+        }
+        [path] => run_file(path),
         _ => {
-            eprintln!("Usage: {executable} [--check] <file.orni> | --check-stdin");
+            eprintln!("Usage: {executable} [--check | --check-module] <file.orni> | --check-stdin");
             process::exit(2);
         }
-    };
-
-    let result = if check_only {
-        check(&source).map(|()| String::new())
-    } else {
-        run(&source)
     };
 
     match result {
@@ -44,12 +55,4 @@ fn main() {
             process::exit(1);
         }
     }
-}
-
-/// Reads an Orni source file or exits with a useful command-line error.
-fn read_source(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| {
-        eprintln!("Could not read '{path}': {error}");
-        process::exit(1);
-    })
 }

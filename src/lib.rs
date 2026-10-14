@@ -7,14 +7,16 @@
 
 #![warn(missing_docs)]
 
+use std::path::Path;
+
 mod diagnostics;
 mod frontend;
 mod runtime;
 mod syntax;
 
-pub use diagnostics::OrniError;
+pub use diagnostics::{DiagnosticSeverity, OrniDiagnostic, OrniError};
 
-use frontend::{Lexer, Parser, TypeChecker};
+use frontend::{Lexer, ModuleLoader, Parser, TypeChecker};
 pub use runtime::ExecutionLimits;
 use runtime::Interpreter;
 
@@ -24,6 +26,36 @@ use runtime::Interpreter;
 /// it to report diagnostics without triggering program behavior.
 pub fn check(source: &str) -> Result<(), OrniError> {
     compile(source).map(|_| ())
+}
+
+/// Checks an Orni entry file and all modules imported by it.
+pub fn check_file(path: impl AsRef<Path>) -> Result<(), OrniError> {
+    compile_file(path.as_ref()).map(|_| ())
+}
+
+/// Checks a file-based program and returns every non-fatal compiler diagnostic.
+pub fn diagnose_file(path: impl AsRef<Path>) -> Result<Vec<OrniDiagnostic>, OrniError> {
+    let (program, diagnostics) = ModuleLoader::new().load_with_diagnostics(path.as_ref())?;
+    TypeChecker::new().check(&program)?;
+    Ok(diagnostics)
+}
+
+/// Checks a reusable Orni module and all modules imported by it.
+///
+/// Unlike [`check_file`], this rejects executable top-level statements such
+/// as `print`, expressions, and conditionals. It is useful for validating a
+/// library module independently from an application entry file.
+pub fn check_module(path: impl AsRef<Path>) -> Result<(), OrniError> {
+    let program = ModuleLoader::new().load_library(path.as_ref())?;
+    TypeChecker::new().check(&program)
+}
+
+/// Checks a reusable module and returns every non-fatal compiler diagnostic.
+pub fn diagnose_module(path: impl AsRef<Path>) -> Result<Vec<OrniDiagnostic>, OrniError> {
+    let (program, diagnostics) =
+        ModuleLoader::new().load_library_with_diagnostics(path.as_ref())?;
+    TypeChecker::new().check(&program)?;
+    Ok(diagnostics)
 }
 
 /// Runs an Orni program and returns everything it printed.
@@ -41,6 +73,20 @@ pub fn check(source: &str) -> Result<(), OrniError> {
 /// ```
 pub fn run(source: &str) -> Result<String, OrniError> {
     run_with_limits(source, ExecutionLimits::default())
+}
+
+/// Runs an Orni entry file together with its recursively imported modules.
+pub fn run_file(path: impl AsRef<Path>) -> Result<String, OrniError> {
+    run_file_with_limits(path, ExecutionLimits::default())
+}
+
+/// Runs a file-based Orni program with explicit resource boundaries.
+pub fn run_file_with_limits(
+    path: impl AsRef<Path>,
+    limits: ExecutionLimits,
+) -> Result<String, OrniError> {
+    let program = compile_file(path.as_ref())?;
+    Interpreter::new(limits).execute(&program)
 }
 
 /// Runs an Orni program with explicit resource boundaries.
@@ -61,9 +107,19 @@ fn compile(source: &str) -> Result<Vec<syntax::Statement>, OrniError> {
     Ok(program)
 }
 
+/// Resolves and validates a complete file-based module graph.
+fn compile_file(path: &Path) -> Result<Vec<syntax::Statement>, OrniError> {
+    let program = ModuleLoader::new().load(path)?;
+    TypeChecker::new().check(&program)?;
+    Ok(program)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionLimits, check, run, run_with_limits};
+    use super::{
+        DiagnosticSeverity, ExecutionLimits, check, check_file, check_module, diagnose_file, run,
+        run_file, run_with_limits,
+    };
 
     #[test]
     fn executes_a_small_program() {
@@ -85,7 +141,7 @@ mod tests {
         let error = run("print missing;").expect_err("the program should fail");
         assert_eq!(
             error.to_string(),
-            "Semantic error at line 1, column 7: undefined variable 'missing'"
+            "Semantic error [ORNI-T001] at line 1, column 7 to line 1, column 14: undefined variable 'missing'"
         );
     }
 
@@ -140,7 +196,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Semantic error at line 1, column 1: return can only be used inside a function"
+            "Semantic error [ORNI-T001] at line 1, column 1 to line 1, column 7: return can only be used inside a function"
         );
     }
 
@@ -232,7 +288,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Semantic error at line 1, column 5: variable value expects int, but found string<3>"
+            "Semantic error [ORNI-T001] at line 1, column 5 to line 1, column 12: variable value expects int, but found string<3>"
         );
     }
 
@@ -422,5 +478,167 @@ mod tests {
                 .to_string()
                 .contains("limit of 2 operation(s)")
         );
+    }
+
+    #[test]
+    fn loads_public_functions_from_file_modules() {
+        let output = run_file("examples/05_modules.orni")
+            .expect("the entry file should load its public module functions");
+
+        assert_eq!(output, "Hello, Orni\nWelcome to the, Framework\nOrni\n");
+
+        let default_namespace = run_file("test/modules/default_entry.orni")
+            .expect("the final path segment should become the default namespace");
+        assert_eq!(default_namespace, "hidden\n");
+    }
+
+    #[test]
+    fn rejects_circular_and_private_module_imports() {
+        let circular = check_file("test/modules/circular_a.orni")
+            .expect_err("a circular module graph must be rejected");
+        assert!(circular.to_string().contains("circular import detected"));
+
+        let private = check_file("test/modules/private_entry.orni")
+            .expect_err("underscore-prefixed members must remain private");
+        assert!(
+            private
+                .to_string()
+                .contains("private member '_hidden' cannot be accessed")
+        );
+
+        let obsolete_public = check("pub func greet() -> string { return \"Hello\"; }")
+            .expect_err("the pub keyword should be replaced by underscore privacy");
+        assert!(obsolete_public.to_string().contains("'pub' is unnecessary"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_module_names() {
+        let duplicate = check_file("test/modules/duplicate_member.orni")
+            .expect_err("a module member must have exactly one declaration");
+        assert!(
+            duplicate
+                .to_string()
+                .contains("module member 'status' is already declared")
+        );
+
+        let alias = check_file("test/modules/alias_collision.orni")
+            .expect_err("an import alias must not shadow a module declaration");
+        assert!(
+            alias
+                .to_string()
+                .contains("module namespace 'service' conflicts with a declaration")
+        );
+    }
+
+    #[test]
+    fn protects_private_members_in_nested_modules() {
+        let error = check_file("test/modules/nested_private_entry.orni")
+            .expect_err("nested private members must not escape their declaring module");
+        let diagnostic = error.to_string();
+
+        assert!(diagnostic.contains("private member 'inner._hidden' cannot be accessed"));
+        assert!(diagnostic.contains("nested_private_entry.orni' at line 3, column 7"));
+    }
+
+    #[test]
+    fn reports_the_exact_module_that_contains_a_semantic_error() {
+        let error = check_file("test/modules/semantic_error_entry.orni")
+            .expect_err("module diagnostics must preserve their source file");
+        let diagnostic = error.to_string();
+
+        assert!(diagnostic.contains("semantic_error.orni' at line 2"));
+        assert!(diagnostic.contains("undefined variable 'missing'"));
+    }
+
+    #[test]
+    fn checks_a_reusable_module_without_an_entry_program() {
+        check_module("examples/modules/greeting.orni")
+            .expect("a declaration-only module should pass isolated validation");
+
+        let error = check_module("examples/05_modules.orni")
+            .expect_err("an entry program must not be accepted as a reusable module");
+        assert!(error.to_string().contains(
+            "imported modules may only contain imports, functions, and module variables"
+        ));
+    }
+
+    #[test]
+    fn collects_multiple_independent_semantic_errors() {
+        let error = check("print first_missing;\nprint second_missing;")
+            .expect_err("both invalid statements should be diagnosed");
+
+        assert_eq!(error.diagnostics().len(), 2);
+        assert!(
+            error
+                .to_string()
+                .contains("undefined variable 'first_missing'")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("undefined variable 'second_missing'")
+        );
+    }
+
+    #[test]
+    fn reports_structured_unused_import_warnings() {
+        let diagnostics = diagnose_file("test/modules/unused_import_entry.orni")
+            .expect("warnings must not fail compilation");
+        let [warning] = diagnostics.as_slice() else {
+            panic!("expected exactly one warning");
+        };
+
+        assert_eq!(warning.code(), "ORNI-W001");
+        assert_eq!(warning.severity(), DiagnosticSeverity::Warning);
+        assert_eq!(
+            warning.source(),
+            Some("test/modules/unused_import_entry.orni")
+        );
+        assert_eq!((warning.line(), warning.column()), (1, 8));
+        assert_eq!((warning.end_line(), warning.end_column()), (1, 15));
+        assert!(warning.message().contains("imported but never used"));
+    }
+
+    #[test]
+    fn imports_selected_public_module_members_into_the_local_scope() {
+        let output = run_file("examples/06_selective_imports.orni")
+            .expect("selected public members should be directly callable");
+
+        assert_eq!(output, "Hello, Orni\nOrni\n");
+    }
+
+    #[test]
+    fn validates_selective_import_boundaries() {
+        let private = check_file("test/modules/selective_private.orni")
+            .expect_err("private members must not be selectively imported");
+        assert!(private.to_string().contains("private member '_hidden'"));
+
+        let unknown = check_file("test/modules/selective_unknown.orni")
+            .expect_err("unknown selected members must be rejected");
+        assert!(
+            unknown
+                .to_string()
+                .contains("no public member named 'missing'")
+        );
+
+        let collision = check_file("test/modules/selective_collision.orni")
+            .expect_err("selected members must not shadow local declarations");
+        assert!(
+            collision
+                .to_string()
+                .contains("selectively imported member 'visible' conflicts")
+        );
+    }
+
+    #[test]
+    fn reports_unused_selective_imports() {
+        let diagnostics = diagnose_file("test/modules/selective_unused.orni")
+            .expect("an unused selected member is a non-fatal warning");
+        let [warning] = diagnostics.as_slice() else {
+            panic!("expected exactly one warning");
+        };
+
+        assert_eq!(warning.code(), "ORNI-W002");
+        assert!(warning.message().contains("member 'visible' is never used"));
     }
 }

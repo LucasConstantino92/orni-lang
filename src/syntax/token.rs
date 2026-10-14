@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 /// A lexical token together with its one-based source position.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Token {
@@ -7,12 +9,44 @@ pub(crate) struct Token {
     pub line: usize,
     /// The one-based source column where the token begins.
     pub column: usize,
+    /// The one-based source line where the token ends.
+    pub end_line: usize,
+    /// The one-based exclusive source column where the token ends.
+    pub end_column: usize,
+    /// The file that produced this token, when it came from a module graph.
+    pub source: Option<Arc<str>>,
 }
 
 impl Token {
     /// Creates a token at the provided source position.
     pub fn new(kind: TokenKind, line: usize, column: usize) -> Self {
-        Self { kind, line, column }
+        Self {
+            kind,
+            line,
+            column,
+            end_line: line,
+            end_column: column.saturating_add(1),
+            source: None,
+        }
+    }
+
+    /// Creates a token tied to a source file shared by the complete token stream.
+    pub fn in_source(
+        kind: TokenKind,
+        line: usize,
+        column: usize,
+        end_line: usize,
+        end_column: usize,
+        source: Arc<str>,
+    ) -> Self {
+        Self {
+            kind,
+            line,
+            column,
+            end_line,
+            end_column,
+            source: Some(source),
+        }
     }
 }
 
@@ -23,6 +57,12 @@ pub(crate) enum TokenKind {
     Let,
     /// The `func` keyword.
     Func,
+    /// The `pub` keyword.
+    Pub,
+    /// The `import` keyword.
+    Import,
+    /// The `as` keyword used by import aliases.
+    As,
     /// The `print` keyword.
     Print,
     /// The `return` keyword.
@@ -81,6 +121,8 @@ pub(crate) enum TokenKind {
     RightBrace,
     /// An argument or parameter separator, `,`.
     Comma,
+    /// A module path separator, `.`.
+    Dot,
     /// A type annotation separator, `:`.
     Colon,
     /// A statement terminator, `;`.

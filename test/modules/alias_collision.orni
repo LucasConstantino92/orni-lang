@@ -1,0 +1,5 @@
+import private as service;
+
+func service() -> string {
+    return "collision";
+}
