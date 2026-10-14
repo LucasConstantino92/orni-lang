@@ -4,6 +4,11 @@
   "description": "Language support for the Orni programming language.",
   "version": "0.7.5",
   "publisher": "orni-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LucasConstantino92/orni-lang.git"
+  },
   "engines": {
     "vscode": ">=1.80.0"
   },
@@ -12,6 +17,7 @@
   "files": [
     "extension.js",
     "language-support.js",
+    "LICENSE",
     "icons",
     "syntaxes",
     "language-configuration.json",

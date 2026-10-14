@@ -2,5 +2,9 @@
 name = "orni"
 version = "0.7.5"
 edition = "2024"
+description = "A memory-conscious framework and language for predictable server applications."
+license = "MIT"
+repository = "https://github.com/LucasConstantino92/orni-lang"
+readme = "README.md"
 
 [dependencies]

@@ -421,3 +421,7 @@ the program.
 Orni is still defining its public language design. Discussions and small,
 focused changes are welcome. Code, documentation, commit messages, and public
 project communication should be written in English.
+
+## License
+
+Orni is open source software available under the [MIT License](LICENSE).
