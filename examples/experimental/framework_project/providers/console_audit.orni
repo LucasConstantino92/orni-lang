@@ -1,0 +1,9 @@
+import contracts.audit.{Audit};
+import contracts.logger.{Logger};
+
+/// Writes audit events through the configured logging provider.
+provider ConsoleAudit(logger: Logger) for Audit {
+    func record(message: string) -> unit {
+        logger.log("AUDIT: " + message);
+    }
+}

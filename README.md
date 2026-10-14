@@ -10,7 +10,7 @@
 
 <p align="center">
   Predictable types, bounded resources, helpful diagnostics, and dependency
-  injection as a future language-level concept.
+  injection as a language-level concept.
 </p>
 
 <p align="center">
@@ -52,6 +52,10 @@ The current foundation focuses on:
 - configurable runtime resource limits;
 - structured diagnostics with stable codes, severity, source paths, and ranges;
 - first-class editor support for `.orni` files.
+
+Version 0.8.0 introduces project manifests, contracts, providers, and editor
+workflow improvements. Explore the guided examples in
+[`examples/experimental`](examples/experimental).
 
 ## A first Orni program
 
@@ -111,7 +115,16 @@ let retries = 3;              // int8
 let port = 8080;              // int16
 let users = 250000;           // int32
 let distance = 9000000000;    // int
+let maximum = 18446744073709551615; // uint64
 ```
+
+Negative literals include their sign during inference: `-128` is `int8`.
+Positive literals above `int64` use `uint64`; values outside both 64-bit ranges
+are rejected. Negating unsigned variables requires an explicit signed
+declaration that can contain the value. Known out-of-range literal conversions
+are rejected during analysis, and computed conversions remain checked at runtime.
+Integer widths currently enforce ranges in the interpreter; they do not yet
+represent packed native integer storage.
 
 Bare `string` parameters and returns are specialized at each call site. The
 compiler propagates argument and default capacities through the function body:
@@ -155,6 +168,66 @@ Default runtime boundaries protect applications from runaway resource use:
 Applications embedding Orni can apply stricter boundaries through the public
 `run_with_limits` Rust API. These protections limit resource exhaustion; real
 production workloads should still be measured and profiled.
+
+Compilation is bounded too: 1 MiB per source file, 8 MiB per module graph,
+20,000 tokens per file, 100,000 tokens per graph, 256 modules, 64 import levels,
+64 syntax/tree levels, and 100,000 semantic-analysis operations. String-return
+inference is limited to 64 nested calls. These are compilation safeguards, not
+a claim that the entire host process uses a fixed amount of memory.
+
+Function bodies are shared during calls and type inference rather than copied
+on every invocation. Active binding and string-byte counters are updated when
+scopes enter or leave instead of rescanning every retained value on each `let`.
+
+## Project manifests and dependency injection (preview)
+
+Place `orni.toml` at the application root:
+
+```toml
+[project]
+name = "my_application"
+entry = "src/main.orni"
+source = "src"
+
+[runtime]
+max_operations = 100000
+max_string_bytes = 1048576
+```
+
+Imports resolve relative to their file or to `project.source`. If both paths
+exist and differ, Orni reports an ambiguity. The nearest manifest also lets a
+nested provider module be checked independently. Project paths must stay inside
+the project directory. Unknown settings and invalid limits are errors.
+
+`orni run` and `orni check` use the manifest entry when no file is provided.
+The CLI applies runtime settings from the manifest; an embedding application's
+explicit `run_file_with_limits` settings take precedence.
+
+```orni
+contract Clock {
+    func now() -> int;
+}
+
+provider SystemClock for Clock {
+    func now() -> int {
+        return 0;
+    }
+}
+
+bind Clock to SystemClock;
+
+func start(clock: Clock) -> unit {
+    print clock.now();
+}
+
+start();
+```
+
+Contracts define method signatures; providers implement them; bindings select
+the implementations injected into functions. Provider dependencies are checked
+through the selected binding graph. Unselected providers can remain available
+without bindings for their dependencies. Contract methods currently require
+explicit arguments and cannot declare defaults.
 
 ## Modules
 
@@ -202,7 +275,7 @@ collisions. Declarations are public by default. A name that starts with `_` is
 private to its module and cannot be accessed through an import, including
 through nested namespaces. Regular imports use a namespace, and `as` can choose
 its local name; selective imports place only their listed public members in the
-local scope. Imported files may contain imports, functions, and immutable
+local scope. Imported files may contain imports, contracts, providers, functions, and immutable
 module variables; executable statements remain exclusive to the entry file.
 Diagnostics preserve the exact source module so the editor can open the
 failing file directly from the Problems panel.
@@ -226,14 +299,15 @@ range, and human-readable message. Independent semantic errors are collected
 in one analysis pass so fixing one issue does not immediately reveal another.
 
 ```text
-Semantic error [ORNI-T001] at line 1, column 7 to line 1, column 20: undefined variable 'first_missing'
-Semantic error [ORNI-T001] at line 2, column 7 to line 2, column 21: undefined variable 'second_missing'
+Semantic error [ORNI-E103] at line 1, column 7 to line 1, column 20: undefined variable 'first_missing'
+Semantic error [ORNI-E103] at line 2, column 7 to line 2, column 21: undefined variable 'second_missing'
 ```
 
 Current diagnostic families:
 
 | Code | Meaning |
 |---|---|
+| `ORNI-E101`–`ORNI-E151` | Specific error identities, shared across compiler phases |
 | `ORNI-L001` | Lexical error |
 | `ORNI-S001` | Syntax error |
 | `ORNI-T001` | Type or name analysis error |
@@ -242,10 +316,16 @@ Current diagnostic families:
 | `ORNI-W001` | Unused module import warning |
 | `ORNI-W002` | Unused selectively imported member warning |
 | `ORNI-W003` | Unused private function warning |
+| `ORNI-W004` | Contract binding that is never injected |
 
 Embedding applications can call `diagnose_file` or `diagnose_module` to read
 non-fatal diagnostics. Failed checks expose every collected error through
 `OrniError::diagnostics()`.
+
+Specific error codes are selected where the compiler creates the diagnostic,
+not inferred from its English message. The editor uses these codes for **How to
+fix** guidance. Phase-wide codes remain fallbacks; older configured compilers
+retain message-based help. See the [diagnostic code catalog](docs/diagnostic-codes.md).
 
 ## Quick start
 
@@ -351,6 +431,14 @@ npx @vscode/vsce package --allow-missing-repository
 Install the generated `.vsix` using your editor's **Install from VSIX** command,
 then reload the editor window.
 
+The preview VSIX includes the WASM compiler and its runner, so editor analysis
+does not require Rust, Cargo, or the compiler checkout. It requires a compatible
+editor based on VS Code 1.95 or newer. Set `orni.compilerPath` to use an installed
+native Orni executable instead. Unsaved buffers are checked together, including
+modules, without executing the program or saving the files. Analysis is queued,
+debounced, and limited to 15 seconds. **Orni: Validate Application** saves and
+checks the complete application's manifest entry.
+
 ## Development
 
 Run the complete Rust test suite:
@@ -362,7 +450,11 @@ cargo test --target wasm32-wasip1
 Run the editor support tests:
 
 ```sh
-node --test editors/vscode/test/language-support.test.js
+npm ci --prefix editors/vscode
+npm test --prefix editors/vscode
+node --test tools/cli.test.mjs
+node tools/package-editor.mjs
+npm run test:host --prefix editors/vscode
 ```
 
 Require warning-free Rust code:
@@ -410,11 +502,17 @@ Orni source (.orni)
 - [x] Runtime memory, recursion, output, and execution-fuel boundaries
 - [x] Namespaced modules, aliases, underscore privacy, and cycle detection
 - [x] Developer CLI with `orni run`, `orni check`, and module validation
-- [ ] Contracts, providers, and dependency injection syntax
+- [x] Contracts, providers, and dependency injection syntax (unreleased preview)
+- [x] Project manifests and standalone editor compiler (unreleased preview)
 - [ ] Standard-library adapter model
 - [ ] PostgreSQL adapter with visible, explicit SQL
 - [ ] Installable production CLI with package manifests and richer diagnostics
 - [ ] Benchmarks and memory telemetry
+
+CI validates pushes and pull requests on Windows and Linux before release.
+It checks formatting, Rust lints, CLI exit statuses, helper tests, and the real
+Extension Host. Release validation additionally requires Cargo, Cargo.lock,
+the extension package, and the tag to report the same version.
 
 PostgreSQL will remain outside the interpreter core. It is planned as an
 adapter so applications can replace it during tests without hiding SQL from

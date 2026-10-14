@@ -10,12 +10,44 @@ use crate::{
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    nesting: usize,
 }
 
 impl Parser {
+    /// Parses a public declaration reference such as `logging.Logger`.
+    fn qualified_name(&mut self, message: &str) -> Result<Token, OrniError> {
+        let mut token = self.consume(|kind| matches!(kind, TokenKind::Identifier(_)), message)?;
+        while self.matches(|kind| matches!(kind, TokenKind::Dot)) {
+            let member = self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_)),
+                "expected a name after '.'",
+            )?;
+            if let (TokenKind::Identifier(name), TokenKind::Identifier(member_name)) =
+                (&mut token.kind, member.kind)
+            {
+                if member_name.starts_with('_') {
+                    return Err(syntax_error(
+                        &token,
+                        "private members cannot be accessed through a module namespace",
+                    )
+                    .with_code("ORNI-E124"));
+                }
+                name.push('.');
+                name.push_str(&member_name);
+            }
+            token.end_line = member.end_line;
+            token.end_column = member.end_column;
+        }
+        Ok(token)
+    }
+
     /// Creates a parser positioned at the first token.
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, current: 0 }
+        Self {
+            tokens,
+            current: 0,
+            nesting: 0,
+        }
     }
 
     /// Parses all statements until the end-of-file marker is reached.
@@ -25,6 +57,32 @@ impl Parser {
             statements.push(self.statement()?);
         }
         Ok(statements)
+    }
+
+    /// Bounds recursive syntax before exhausting the native or WASI stack.
+    fn with_nesting<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, OrniError>,
+    ) -> Result<T, OrniError> {
+        if self.nesting >= 64 {
+            return Err(self
+                .error_at_current("syntax nesting exceeds the limit of 64 levels")
+                .with_code("ORNI-E142"));
+        }
+        self.nesting += 1;
+        let result = parse(self);
+        self.nesting -= 1;
+        result
+    }
+
+    fn check_chain(&self, length: &mut usize) -> Result<(), OrniError> {
+        *length += 1;
+        if *length > 128 {
+            return Err(self
+                .error_at_current("expression chain exceeds the limit of 128 operations")
+                .with_code("ORNI-E142"));
+        }
+        Ok(())
     }
 
     /// Consumes a required token or reports a syntax error at the current one.

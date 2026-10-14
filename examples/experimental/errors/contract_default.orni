@@ -1,0 +1,5 @@
+// Intentional compile-time error: contract methods cannot declare optional defaults.
+// Expected: Contract methods cannot declare default values.
+contract Logger {
+    func log(message: string = "default") -> unit;
+}

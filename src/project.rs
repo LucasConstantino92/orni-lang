@@ -1,0 +1,160 @@
+//! Project manifests shared by the compiler, command line, and editor.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use crate::{ExecutionLimits, OrniError};
+
+/// Paths and runtime settings declared by the nearest `orni.toml` manifest.
+#[derive(Debug, Clone)]
+pub struct Project {
+    /// Directory containing the manifest.
+    pub root: PathBuf,
+    /// Directory used to resolve root-relative module imports.
+    pub source: PathBuf,
+    /// Executable application entry point.
+    pub entry: PathBuf,
+    /// Resource boundaries applied by the command line runner.
+    pub runtime: ExecutionLimits,
+}
+
+impl Project {
+    /// Finds and validates the closest manifest above a file or directory.
+    pub fn discover(path: impl AsRef<Path>) -> Result<Option<Self>, OrniError> {
+        let path = path.as_ref();
+        let start = if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(Path::new("."))
+        };
+        for ancestor in start.ancestors() {
+            let root = if ancestor.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                ancestor
+            };
+            let manifest = root.join("orni.toml");
+            if manifest.is_file() {
+                return Self::read(root, &manifest).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    fn read(root: &Path, manifest: &Path) -> Result<Self, OrniError> {
+        let error = |message: String| {
+            OrniError::module(1, 1, message)
+                .with_code("ORNI-E130")
+                .with_source(manifest)
+        };
+        if fs::metadata(manifest)
+            .map_err(|e| error(e.to_string()))?
+            .len()
+            > 65_536
+        {
+            return Err(error("project manifest exceeds 65536 bytes".into()));
+        }
+        let text = fs::read_to_string(manifest).map_err(|e| error(e.to_string()))?;
+        let document = text
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| error(format!("invalid project manifest: {e}")))?;
+        let value = document.as_table();
+        for (key, _) in value.iter() {
+            if !matches!(key, "project" | "runtime") {
+                return Err(error(format!("unknown manifest section '{key}'")));
+            }
+        }
+        let project = value
+            .get("project")
+            .and_then(toml_edit::Item::as_table)
+            .ok_or_else(|| error("manifest requires a [project] table".into()))?;
+        for (key, _) in project.iter() {
+            if !matches!(key, "name" | "source" | "entry") {
+                return Err(error(format!("unknown project setting '{key}'")));
+            }
+        }
+        if let Some(name) = project.get("name")
+            && name.as_str().is_none_or(|name| name.trim().is_empty())
+        {
+            return Err(error("project.name must be a nonempty string".into()));
+        }
+        let resolve = |key: &str, fallback: &str| -> Result<PathBuf, OrniError> {
+            let text = match project.get(key) {
+                Some(value) => value
+                    .as_str()
+                    .ok_or_else(|| error(format!("project.{key} must be a string")))?,
+                None => fallback,
+            };
+            let path = Path::new(text);
+            if path.is_absolute()
+                || path.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                    )
+                })
+            {
+                return Err(error(format!(
+                    "project.{key} must stay inside the project directory"
+                )));
+            }
+            let joined = root.join(path);
+            if let (Ok(base), Ok(resolved)) = (fs::canonicalize(root), fs::canonicalize(&joined))
+                && !resolved.starts_with(base)
+            {
+                return Err(error(format!(
+                    "project.{key} resolves outside the project directory"
+                )));
+            }
+            Ok(joined)
+        };
+        let source = resolve("source", ".")?;
+        let entry = resolve("entry", "main.orni")?;
+        if !source.is_dir() {
+            return Err(error(
+                "project.source must name an existing directory".into(),
+            ));
+        }
+        if entry
+            .extension()
+            .is_none_or(|extension| extension != "orni")
+        {
+            return Err(error("project.entry must name an .orni file".into()));
+        }
+        let mut runtime = ExecutionLimits::default();
+        if let Some(settings) = value.get("runtime") {
+            let settings = settings
+                .as_table()
+                .ok_or_else(|| error("runtime must be a table".into()))?;
+            for (key, value) in settings {
+                let number = value
+                    .as_integer()
+                    .and_then(|number| usize::try_from(number).ok())
+                    .filter(|number| *number > 0)
+                    .ok_or_else(|| {
+                        error(format!(
+                            "runtime.{key} must be a positive platform-sized integer"
+                        ))
+                    })?;
+                let target = match key {
+                    "max_string_bytes" => &mut runtime.max_string_bytes,
+                    "max_output_bytes" => &mut runtime.max_output_bytes,
+                    "max_retained_string_bytes" => &mut runtime.max_retained_string_bytes,
+                    "max_call_depth" => &mut runtime.max_call_depth,
+                    "max_variables" => &mut runtime.max_variables,
+                    "max_operations" => &mut runtime.max_operations,
+                    _ => return Err(error(format!("unknown runtime setting '{key}'"))),
+                };
+                *target = number;
+            }
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            source,
+            entry,
+            runtime,
+        })
+    }
+}

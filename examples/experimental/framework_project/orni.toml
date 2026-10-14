@@ -1,0 +1,8 @@
+[project]
+name = "framework_project"
+entry = "main.orni"
+source = "."
+
+[runtime]
+max_operations = 100000
+max_string_bytes = 1048576

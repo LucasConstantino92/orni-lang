@@ -1,6 +1,9 @@
 use std::{env, io, io::Read, process};
 
-use orni::{OrniDiagnostic, check, diagnose_file, diagnose_module, run_file};
+use orni::{
+    OrniDiagnostic, Project, check, diagnose_file, diagnose_file_with_source, diagnose_module,
+    diagnose_module_buffers, diagnose_project_buffers, run_file,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -10,18 +13,30 @@ enum Command<'a> {
     Check(&'a str),
     CheckModule(&'a str),
     CheckStdin,
+    CheckOverlay(&'a str, &'a str),
+    CheckBuffers(&'a str),
+    CheckModuleBuffers(&'a str),
     Help,
     Version,
 }
 
 fn usage(executable: &str) -> String {
     format!(
-        "Orni {VERSION}\n\nUsage:\n  {executable} run <file.orni>\n  {executable} check <file.orni>\n  {executable} check-module <file.orni>\n  {executable} --version\n  {executable} --help"
+        "Orni {VERSION}\n\nUsage:\n  {executable} run [file.orni | project-directory]\n  {executable} check [file.orni | project-directory]\n  {executable} check-module <file.orni>\n  {executable} --version\n  {executable} --help\n\nWithout a file, run and check use the nearest orni.toml entry."
     )
 }
 
 fn parse_command(arguments: &[String]) -> Option<Command<'_>> {
     match arguments {
+        [command, entry] if command == "--check-module-buffers" => {
+            Some(Command::CheckModuleBuffers(entry))
+        }
+        [command, entry] if command == "--check-buffers" => Some(Command::CheckBuffers(entry)),
+        [command, entry, file] if command == "--check-overlay" => {
+            Some(Command::CheckOverlay(entry, file))
+        }
+        [command] if command == "run" => Some(Command::Run(".")),
+        [command] if command == "check" => Some(Command::Check(".")),
         [flag] if flag == "--help" || flag == "-h" => Some(Command::Help),
         [flag] if flag == "--version" || flag == "-V" => Some(Command::Version),
         [flag] if flag == "--check-stdin" => Some(Command::CheckStdin),
@@ -47,6 +62,32 @@ fn format_diagnostics(diagnostics: &[OrniDiagnostic]) -> String {
     output
 }
 
+fn portable_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn entry_path(path: &str) -> Result<std::path::PathBuf, orni::OrniError> {
+    let path = std::path::PathBuf::from(portable_path(path));
+    if path.is_dir() {
+        Ok(Project::discover(&path)?
+            .map_or_else(|| path.join("main.orni"), |project| project.entry))
+    } else {
+        Ok(path)
+    }
+}
+
+fn read_source(limit: u64) -> String {
+    let mut source = String::new();
+    io::stdin()
+        .take(limit + 1)
+        .read_to_string(&mut source)
+        .unwrap_or_else(|error| {
+            eprintln!("Could not read standard input: {error}");
+            process::exit(1);
+        });
+    source
+}
+
 fn main() {
     let mut args = env::args();
     let executable = args.next().unwrap_or_else(|| "orni".to_string());
@@ -66,22 +107,30 @@ fn main() {
     }
 
     let result = match command {
-        Command::Run(path) => run_file(path),
-        Command::Check(path) => {
-            diagnose_file(path).map(|diagnostics| format_diagnostics(&diagnostics))
-        }
+        Command::Run(path) => entry_path(path).and_then(run_file),
+        Command::Check(path) => entry_path(path)
+            .and_then(diagnose_file)
+            .map(|diagnostics| format_diagnostics(&diagnostics)),
         Command::CheckModule(path) => {
-            diagnose_module(path).map(|diagnostics| format_diagnostics(&diagnostics))
+            diagnose_module(portable_path(path)).map(|diagnostics| format_diagnostics(&diagnostics))
         }
         Command::CheckStdin => {
-            let mut source = String::new();
-            io::stdin()
-                .read_to_string(&mut source)
-                .unwrap_or_else(|error| {
-                    eprintln!("Could not read standard input: {error}");
-                    process::exit(1);
-                });
+            let source = read_source(1_048_576);
             check(&source).map(|()| String::new())
+        }
+        Command::CheckOverlay(entry, file) => diagnose_file_with_source(
+            portable_path(entry),
+            portable_path(file),
+            &read_source(1_048_576),
+        )
+        .map(|diagnostics| format_diagnostics(&diagnostics)),
+        Command::CheckBuffers(entry) => {
+            diagnose_project_buffers(portable_path(entry), &read_source(8_388_608))
+                .map(|diagnostics| format_diagnostics(&diagnostics))
+        }
+        Command::CheckModuleBuffers(entry) => {
+            diagnose_module_buffers(portable_path(entry), &read_source(8_388_608))
+                .map(|diagnostics| format_diagnostics(&diagnostics))
         }
         Command::Help | Command::Version => unreachable!(),
     };
@@ -97,7 +146,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, parse_command};
+    use super::{Command, parse_command, portable_path};
 
     fn arguments(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
@@ -124,6 +173,14 @@ mod tests {
         assert_eq!(
             parse_command(&command),
             Some(Command::Run("examples/hello.orni"))
+        );
+    }
+
+    #[test]
+    fn normalizes_windows_paths_for_the_wasi_runtime() {
+        assert_eq!(
+            portable_path(r"examples\experimental\framework_project\main.orni"),
+            "examples/experimental/framework_project/main.orni"
         );
     }
 }

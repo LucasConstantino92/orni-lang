@@ -13,7 +13,7 @@ use super::environment::Environment;
 struct Function {
     parameters: Vec<Parameter>,
     return_type: TypeName,
-    body: Vec<Statement>,
+    body: std::rc::Rc<[Statement]>,
 }
 
 /// Describes how execution should continue after a statement.
@@ -28,6 +28,7 @@ enum ExecutionFlow {
 pub(crate) struct Interpreter {
     environment: Environment,
     functions: HashMap<String, Function>,
+    bindings: HashMap<String, String>,
     output: String,
     limits: ExecutionLimits,
     call_depth: usize,
@@ -40,6 +41,7 @@ impl Interpreter {
         Self {
             environment: Environment::new(),
             functions: HashMap::new(),
+            bindings: HashMap::new(),
             output: String::new(),
             limits,
             call_depth: 0,
@@ -50,30 +52,69 @@ impl Interpreter {
     /// Executes a complete program and returns its captured output.
     pub fn execute(mut self, program: &[Statement]) -> Result<String, OrniError> {
         for statement in program {
-            if let Statement::Function {
-                name,
-                parameters,
-                return_type,
-                body,
-                ..
-            } = statement
-            {
-                self.functions.insert(
-                    identifier_name(name).to_owned(),
-                    Function {
-                        parameters: parameters.clone(),
-                        return_type: *return_type,
-                        body: body.clone(),
-                    },
-                );
+            match statement {
+                Statement::Function {
+                    name,
+                    parameters,
+                    return_type,
+                    body,
+                    ..
+                } => {
+                    self.functions.insert(
+                        identifier_name(name).to_owned(),
+                        Function {
+                            parameters: parameters.clone(),
+                            return_type: return_type.clone(),
+                            body: body.clone().into(),
+                        },
+                    );
+                }
+                Statement::Provider {
+                    name,
+                    dependencies,
+                    methods,
+                    ..
+                } => {
+                    let provider_name = identifier_name(name);
+                    for method in methods {
+                        let Statement::Function {
+                            name,
+                            parameters,
+                            return_type,
+                            body,
+                        } = method
+                        else {
+                            unreachable!("providers contain only functions")
+                        };
+                        let mut injected_parameters = dependencies.clone();
+                        injected_parameters.extend(parameters.clone());
+                        self.functions.insert(
+                            format!("{provider_name}.{}", identifier_name(name)),
+                            Function {
+                                parameters: injected_parameters,
+                                return_type: return_type.clone(),
+                                body: body.clone().into(),
+                            },
+                        );
+                    }
+                }
+                Statement::Bind {
+                    contract, provider, ..
+                } => {
+                    self.bindings.insert(
+                        identifier_name(contract).to_owned(),
+                        identifier_name(provider).to_owned(),
+                    );
+                }
+                _ => {}
             }
         }
         for statement in program {
             if let ExecutionFlow::Return { keyword, .. } = self.execute_statement(statement)? {
-                return Err(runtime_error(
-                    &keyword,
-                    "return can only be used inside a function",
-                ));
+                return Err(
+                    runtime_error(&keyword, "return can only be used inside a function")
+                        .with_code("ORNI-E118"),
+                );
             }
         }
         Ok(self.output)
@@ -88,13 +129,14 @@ impl Interpreter {
             Statement::Import { .. } => {
                 unreachable!("module imports are resolved before interpretation")
             }
+            Statement::Contract { .. } | Statement::Provider { .. } | Statement::Bind { .. } => {}
             Statement::Let {
                 name,
                 declared_type,
                 value,
             } => {
                 let identifier = identifier_name(name);
-                let value = coerce_value(self.evaluate(value)?, *declared_type, name)?;
+                let value = coerce_value(self.evaluate(value)?, declared_type.clone(), name)?;
                 self.define_variable(identifier, value, name)?;
             }
             Statement::Function {
@@ -108,8 +150,8 @@ impl Interpreter {
                     identifier_name(name).to_owned(),
                     Function {
                         parameters: parameters.clone(),
-                        return_type: *return_type,
-                        body: body.clone(),
+                        return_type: return_type.clone(),
+                        body: body.clone().into(),
                     },
                 );
             }
@@ -124,7 +166,9 @@ impl Interpreter {
                     .len()
                     .checked_add(rendered.len())
                     .and_then(|length| length.checked_add(1))
-                    .ok_or_else(|| runtime_error(keyword, "output size overflow"))?;
+                    .ok_or_else(|| {
+                        runtime_error(keyword, "output size overflow").with_code("ORNI-E136")
+                    })?;
                 if next_length > self.limits.max_output_bytes {
                     return Err(runtime_error(
                         keyword,
@@ -132,7 +176,8 @@ impl Interpreter {
                             "output exceeds the configured limit of {} UTF-8 byte(s)",
                             self.limits.max_output_bytes
                         ),
-                    ));
+                    )
+                    .with_code("ORNI-E136"));
                 }
                 self.output.push_str(&rendered);
                 self.output.push('\n');
@@ -182,10 +227,10 @@ impl Interpreter {
             Expression::Grouping(expression) => self.evaluate(expression),
             Expression::Variable(token) => {
                 let name = identifier_name(token);
-                self.environment
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| runtime_error(token, &format!("undefined variable '{name}'")))
+                self.environment.get(name).cloned().ok_or_else(|| {
+                    runtime_error(token, &format!("undefined variable '{name}'"))
+                        .with_code("ORNI-E103")
+                })
             }
             Expression::Unary { operator, right } => {
                 let right = self.evaluate(right)?;
@@ -233,10 +278,10 @@ impl Interpreter {
         arguments: &[Expression],
     ) -> Result<Value, OrniError> {
         let Expression::Variable(name_token) = callee else {
-            return Err(runtime_error(
-                closing_parenthesis,
-                "only named functions can be called",
-            ));
+            return Err(
+                runtime_error(closing_parenthesis, "only named functions can be called")
+                    .with_code("ORNI-E150"),
+            );
         };
         let name = identifier_name(name_token);
         if self.call_depth >= self.limits.max_call_depth {
@@ -246,25 +291,42 @@ impl Interpreter {
                     "function call depth exceeds the configured limit of {}",
                     self.limits.max_call_depth
                 ),
-            ));
+            )
+            .with_code("ORNI-E134"));
         }
-        let function =
-            self.functions.get(name).cloned().ok_or_else(|| {
-                runtime_error(name_token, &format!("undefined function '{name}'"))
-            })?;
+        let resolved_name = if self.functions.contains_key(name) {
+            name.to_owned()
+        } else if let Some((receiver, method)) = name.split_once('.') {
+            match self.environment.get(receiver) {
+                Some(Value::Provider { provider, .. }) => format!("{provider}.{method}"),
+                _ => name.to_owned(),
+            }
+        } else {
+            name.to_owned()
+        };
+        let function = self.functions.get(&resolved_name).cloned().ok_or_else(|| {
+            runtime_error(name_token, &format!("undefined function '{name}'"))
+                .with_code("ORNI-E103")
+        })?;
 
         let required_arguments = function
             .parameters
             .iter()
+            .filter(|parameter| !matches!(&parameter.type_name, TypeName::Contract(_)))
             .filter(|parameter| parameter.default_value.is_none())
             .count();
-        if arguments.len() < required_arguments || arguments.len() > function.parameters.len() {
-            let expected = if required_arguments == function.parameters.len() {
-                format!("{} argument(s)", function.parameters.len())
+        let supplied_parameter_count = function
+            .parameters
+            .iter()
+            .filter(|parameter| !matches!(&parameter.type_name, TypeName::Contract(_)))
+            .count();
+        if arguments.len() < required_arguments || arguments.len() > supplied_parameter_count {
+            let expected = if required_arguments == supplied_parameter_count {
+                format!("{supplied_parameter_count} argument(s)")
             } else {
                 format!(
                     "between {required_arguments} and {} argument(s)",
-                    function.parameters.len()
+                    supplied_parameter_count
                 )
             };
             return Err(runtime_error(
@@ -273,7 +335,8 @@ impl Interpreter {
                     "function '{name}' expects {expected}, but received {}",
                     arguments.len(),
                 ),
-            ));
+            )
+            .with_code("ORNI-E108"));
         }
 
         let values = arguments
@@ -300,16 +363,31 @@ impl Interpreter {
     ) -> Result<(), OrniError> {
         let mut values = values.into_iter();
         for parameter in parameters {
-            let value = match values.next() {
-                Some(value) => value,
-                None => self.evaluate(
-                    parameter
-                        .default_value
-                        .as_ref()
-                        .expect("the arity check guarantees a default value"),
-                )?,
+            let value = match &parameter.type_name {
+                TypeName::Contract(contract) => {
+                    let provider = self.bindings.get(contract).cloned().ok_or_else(|| {
+                        runtime_error(
+                            &parameter.name,
+                            &format!("contract '{contract}' has no provider binding"),
+                        )
+                        .with_code("ORNI-E102")
+                    })?;
+                    Value::Provider {
+                        contract: contract.clone(),
+                        provider,
+                    }
+                }
+                _ => match values.next() {
+                    Some(value) => value,
+                    None => self.evaluate(
+                        parameter
+                            .default_value
+                            .as_ref()
+                            .expect("the arity check guarantees a default value"),
+                    )?,
+                },
             };
-            let value = coerce_value(value, Some(parameter.type_name), &parameter.name)?;
+            let value = coerce_value(value, Some(parameter.type_name.clone()), &parameter.name)?;
             self.define_variable(identifier_name(&parameter.name), value, &parameter.name)?;
         }
         Ok(())
@@ -403,7 +481,7 @@ impl Interpreter {
         let length = left
             .len()
             .checked_add(right.len())
-            .ok_or_else(|| runtime_error(token, "string size overflow"))?;
+            .ok_or_else(|| runtime_error(token, "string size overflow").with_code("ORNI-E137"))?;
         if length > self.limits.max_string_bytes {
             return Err(runtime_error(
                 token,
@@ -411,7 +489,8 @@ impl Interpreter {
                     "string requires {length} UTF-8 byte(s), but the runtime limit is {}",
                     self.limits.max_string_bytes
                 ),
-            ));
+            )
+            .with_code("ORNI-E137"));
         }
 
         let mut combined = String::with_capacity(length);
@@ -435,7 +514,8 @@ impl Interpreter {
                     "variable count exceeds the configured limit of {}",
                     self.limits.max_variables
                 ),
-            ));
+            )
+            .with_code("ORNI-E138"));
         }
 
         let value_bytes = match &value {
@@ -449,7 +529,8 @@ impl Interpreter {
                     "string requires {value_bytes} UTF-8 byte(s), but the runtime limit is {}",
                     self.limits.max_string_bytes
                 ),
-            ));
+            )
+            .with_code("ORNI-E137"));
         }
         let replaced_bytes =
             self.environment
@@ -463,7 +544,9 @@ impl Interpreter {
             .retained_string_bytes()
             .saturating_sub(replaced_bytes)
             .checked_add(value_bytes)
-            .ok_or_else(|| runtime_error(token, "retained string size overflow"))?;
+            .ok_or_else(|| {
+                runtime_error(token, "retained string size overflow").with_code("ORNI-E135")
+            })?;
         if retained_bytes > self.limits.max_retained_string_bytes {
             return Err(runtime_error(
                 token,
@@ -471,7 +554,8 @@ impl Interpreter {
                     "retained strings exceed the configured limit of {} UTF-8 byte(s)",
                     self.limits.max_retained_string_bytes
                 ),
-            ));
+            )
+            .with_code("ORNI-E135"));
         }
         self.environment.define(name.to_owned(), value);
         Ok(())
@@ -486,7 +570,8 @@ impl Interpreter {
                     "execution exceeds the configured limit of {} operation(s)",
                     self.limits.max_operations
                 ),
-            ));
+            )
+            .with_code("ORNI-E139"));
         }
         self.operations += 1;
         Ok(())
@@ -508,14 +593,18 @@ impl Interpreter {
         };
         let checked = |value: Option<i128>| {
             value
-                .ok_or_else(|| runtime_error(operator, "integer arithmetic overflow"))
+                .ok_or_else(|| {
+                    runtime_error(operator, "integer arithmetic overflow").with_code("ORNI-E132")
+                })
                 .and_then(|value| checked_integer(value, result_type, operator))
         };
         match operator.kind {
             TokenKind::Plus => checked(left.checked_add(right)),
             TokenKind::Minus => checked(left.checked_sub(right)),
             TokenKind::Star => checked(left.checked_mul(right)),
-            TokenKind::Slash if right == 0 => Err(runtime_error(operator, "division by zero")),
+            TokenKind::Slash if right == 0 => {
+                Err(runtime_error(operator, "division by zero").with_code("ORNI-E131"))
+            }
             TokenKind::Slash => checked_integer(left / right, result_type, operator),
             TokenKind::Greater => Ok(Value::Bool(left > right)),
             TokenKind::GreaterEqual => Ok(Value::Bool(left >= right)),
@@ -533,7 +622,9 @@ impl Interpreter {
             TokenKind::Plus => Ok(Value::Double(left + right)),
             TokenKind::Minus => Ok(Value::Double(left - right)),
             TokenKind::Star => Ok(Value::Double(left * right)),
-            TokenKind::Slash if right == 0.0 => Err(runtime_error(operator, "division by zero")),
+            TokenKind::Slash if right == 0.0 => {
+                Err(runtime_error(operator, "division by zero").with_code("ORNI-E131"))
+            }
             TokenKind::Slash => Ok(Value::Double(left / right)),
             TokenKind::Greater => Ok(Value::Bool(left > right)),
             TokenKind::GreaterEqual => Ok(Value::Bool(left >= right)),
@@ -549,8 +640,11 @@ impl Interpreter {
 /// Finds the source token representing a statement-level operation.
 fn statement_token(statement: &Statement) -> Option<&Token> {
     match statement {
-        Statement::Import { keyword, .. } => Some(keyword),
-        Statement::Let { name, .. } | Statement::Function { name, .. } => Some(name),
+        Statement::Import { keyword, .. } | Statement::Bind { keyword, .. } => Some(keyword),
+        Statement::Let { name, .. }
+        | Statement::Function { name, .. }
+        | Statement::Contract { name, .. }
+        | Statement::Provider { name, .. } => Some(name),
         Statement::Print { keyword, .. }
         | Statement::Return { keyword, .. }
         | Statement::If { keyword, .. } => Some(keyword),
@@ -607,7 +701,8 @@ fn coerce_value(
                     "string requires {} UTF-8 byte(s), but allows at most {max_bytes}",
                     value.len()
                 ),
-            ))
+            )
+            .with_code("ORNI-E137"))
         }
         (value, _) => Ok(value),
     }
@@ -622,7 +717,8 @@ fn integer_to_double(value: i128, token: &Token) -> Result<f64, OrniError> {
         Err(runtime_error(
             token,
             &format!("value {value} cannot be represented exactly as double"),
-        ))
+        )
+        .with_code("ORNI-E133"))
     }
 }
 
@@ -641,6 +737,7 @@ fn checked_integer(
         Err(runtime_error(
             token,
             &format!("value {value} is out of range for {integer_type}"),
-        ))
+        )
+        .with_code("ORNI-E104"))
     }
 }

@@ -1,0 +1,13 @@
+import contracts.audit.{Audit};
+import contracts.logger.{Logger};
+import providers.console_audit.{ConsoleAudit};
+import providers.console_logger.{ConsoleLogger};
+
+bind Logger to ConsoleLogger;
+bind Audit to ConsoleAudit;
+
+func start(audit: Audit) -> unit {
+    audit.record("Orni modular application started");
+}
+
+start();

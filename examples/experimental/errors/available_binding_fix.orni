@@ -1,0 +1,34 @@
+// Learning example: a missing Clock binding is intentional until its Quick Fix is applied.
+// If a Clock binding is already present, this file is fixed.
+// Use pending_binding_fix.orni for a fresh intentional error.
+// Place the cursor on Clock in TimedAudit and press Ctrl+. to add its binding.
+
+contract Clock {
+    func now() -> int;
+}
+
+contract Audit {
+    func record(message: string) -> unit;
+}
+
+provider SystemClock for Clock {
+    func now() -> int {
+        return 1;
+    }
+}
+
+provider TimedAudit(clock: Clock) for Audit {
+    func record(message: string) -> unit {
+        print message;
+    }
+}
+
+bind Audit to TimedAudit;
+
+func start(audit: Audit) -> unit {
+    audit.record("ready");
+}
+
+start();
+
+bind Clock to SystemClock;

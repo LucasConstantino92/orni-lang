@@ -1,0 +1,19 @@
+// Intentional semantic error: Clock has no provider binding.
+// Place the cursor on the underlined Clock parameter and press Ctrl+.
+// Choose "Bind 'Clock' to 'SystemClock'" to fix this example.
+
+contract Clock {
+    func now() -> int;
+}
+
+provider SystemClock for Clock {
+    func now() -> int {
+        return 1;
+    }
+}
+
+func start(clock: Clock) -> unit {
+    print clock.now();
+}
+
+start();

@@ -1,0 +1,4 @@
+/// Describes application logging without choosing an implementation.
+contract Logger {
+    func log(message: string) -> unit;
+}

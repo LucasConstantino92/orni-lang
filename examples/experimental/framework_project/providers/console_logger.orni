@@ -1,0 +1,8 @@
+import contracts.logger.{Logger};
+
+/// Writes logging messages to standard Orni output.
+provider ConsoleLogger for Logger {
+    func log(message: string) -> unit {
+        print message;
+    }
+}

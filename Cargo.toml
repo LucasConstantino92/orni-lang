@@ -1,6 +1,6 @@
 [package]
 name = "orni"
-version = "0.7.6"
+version = "0.8.0"
 edition = "2024"
 description = "A memory-conscious framework and language for predictable server applications."
 license = "MIT"
@@ -8,3 +8,4 @@ repository = "https://github.com/LucasConstantino92/orni-lang"
 readme = "README.md"
 
 [dependencies]
+toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }

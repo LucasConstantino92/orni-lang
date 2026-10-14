@@ -11,6 +11,7 @@ if (!wasmPath) {
 
 const wasi = new WASI({
   version: "preview1",
+  returnOnExit: true,
   args: [wasmPath, ...programArguments],
   env: process.env,
   preopens: {
@@ -22,4 +23,4 @@ const bytes = await readFile(wasmPath);
 const module = await WebAssembly.compile(bytes);
 const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
 
-wasi.start(instance);
+process.exitCode = wasi.start(instance);

@@ -1,3 +1,4 @@
+// Intentional runtime error: run this file to test string growth limits. Static analysis may pass.
 // Expected: Runtime error before recursive string growth exhausts memory.
 func grow(value: string) -> string {
     return grow(value + value);

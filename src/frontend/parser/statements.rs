@@ -1,6 +1,6 @@
 use crate::{
     diagnostics::OrniError,
-    syntax::{IntegerType, Parameter, Statement, TokenKind, TypeName},
+    syntax::{ContractMethod, IntegerType, Parameter, Statement, TokenKind, TypeName},
 };
 
 use super::{Parser, syntax_error};
@@ -8,15 +8,28 @@ use super::{Parser, syntax_error};
 impl Parser {
     /// Parses the next statement by inspecting its leading token.
     pub(super) fn statement(&mut self) -> Result<Statement, OrniError> {
+        self.with_nesting(|parser| parser.statement_inner())
+    }
+
+    fn statement_inner(&mut self) -> Result<Statement, OrniError> {
         if self.matches(|kind| matches!(kind, TokenKind::Import)) {
             return self.import_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Contract)) {
+            return self.contract_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Provider)) {
+            return self.provider_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Bind)) {
+            return self.bind_statement();
         }
         if self.matches(|kind| matches!(kind, TokenKind::Pub)) {
             let token = self.previous();
             return Err(syntax_error(
                 token,
                 "'pub' is unnecessary; module declarations are public unless their name starts with '_'",
-            ));
+            ).with_code("ORNI-E149"));
         }
         if self.matches(|kind| matches!(kind, TokenKind::Func)) {
             return self.function_statement();
@@ -46,11 +59,31 @@ impl Parser {
             |kind| matches!(kind, TokenKind::Identifier(_)),
             "expected a function name after 'func'",
         )?;
+        let parameters = self.parameters()?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::Arrow),
+            "expected '->' after the parameters",
+        )?;
+        let return_type = self.type_name()?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::LeftBrace),
+            "expected '{' before the function body",
+        )?;
+        let body = self.block()?;
+
+        Ok(Statement::Function {
+            name,
+            parameters,
+            return_type,
+            body,
+        })
+    }
+
+    fn parameters(&mut self) -> Result<Vec<Parameter>, OrniError> {
         self.consume(
             |kind| matches!(kind, TokenKind::LeftParen),
-            "expected '(' after the function name",
+            "expected '(' before the parameters",
         )?;
-
         let mut parameters = Vec::new();
         let mut found_default = false;
         if !matches!(self.peek().kind, TokenKind::RightParen) {
@@ -59,6 +92,16 @@ impl Parser {
                     |kind| matches!(kind, TokenKind::Identifier(_)),
                     "expected a parameter name",
                 )?;
+                if parameters
+                    .iter()
+                    .any(|parameter: &Parameter| parameter.name.kind == parameter_name.kind)
+                {
+                    return Err(syntax_error(
+                        &parameter_name,
+                        "parameter name is already declared",
+                    )
+                    .with_code("ORNI-E116"));
+                }
                 self.consume(
                     |kind| matches!(kind, TokenKind::Colon),
                     "expected ':' after the parameter name",
@@ -72,7 +115,8 @@ impl Parser {
                         return Err(syntax_error(
                             &parameter_name,
                             "required parameters cannot follow optional parameters",
-                        ));
+                        )
+                        .with_code("ORNI-E147"));
                     }
                     None
                 };
@@ -91,22 +135,109 @@ impl Parser {
             |kind| matches!(kind, TokenKind::RightParen),
             "expected ')' after the parameters",
         )?;
-        self.consume(
-            |kind| matches!(kind, TokenKind::Arrow),
-            "expected '->' after the parameters",
+        Ok(parameters)
+    }
+
+    /// Parses a contract containing function signatures without bodies.
+    fn contract_statement(&mut self) -> Result<Statement, OrniError> {
+        let name = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a contract name after 'contract'",
         )?;
-        let return_type = self.type_name()?;
         self.consume(
             |kind| matches!(kind, TokenKind::LeftBrace),
-            "expected '{' before the function body",
+            "expected '{' after the contract name",
         )?;
-        let body = self.block()?;
+        let mut methods = Vec::new();
+        while !matches!(self.peek().kind, TokenKind::RightBrace) && !self.is_at_end() {
+            self.consume(
+                |kind| matches!(kind, TokenKind::Func),
+                "expected a function signature in the contract",
+            )?;
+            let method_name = self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_)),
+                "expected a method name after 'func'",
+            )?;
+            let parameters = self.parameters()?;
+            self.consume(
+                |kind| matches!(kind, TokenKind::Arrow),
+                "expected '->' after the contract parameters",
+            )?;
+            let return_type = self.type_name()?;
+            self.consume(
+                |kind| matches!(kind, TokenKind::Semicolon),
+                "expected ';' after the contract method",
+            )?;
+            methods.push(ContractMethod {
+                name: method_name,
+                parameters,
+                return_type,
+            });
+        }
+        self.consume(
+            |kind| matches!(kind, TokenKind::RightBrace),
+            "expected '}' after the contract",
+        )?;
+        Ok(Statement::Contract { name, methods })
+    }
 
-        Ok(Statement::Function {
+    /// Parses a concrete provider implementation.
+    fn provider_statement(&mut self) -> Result<Statement, OrniError> {
+        let name = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a provider name after 'provider'",
+        )?;
+        let dependencies = if matches!(self.peek().kind, TokenKind::LeftParen) {
+            self.parameters()?
+        } else {
+            Vec::new()
+        };
+        self.consume(
+            |kind| matches!(kind, TokenKind::For),
+            "expected 'for' after the provider name",
+        )?;
+        let contract = self.qualified_name("expected a contract name after 'for'")?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::LeftBrace),
+            "expected '{' before the provider methods",
+        )?;
+        let mut methods = Vec::new();
+        while !matches!(self.peek().kind, TokenKind::RightBrace) && !self.is_at_end() {
+            self.consume(
+                |kind| matches!(kind, TokenKind::Func),
+                "expected a function implementation in the provider",
+            )?;
+            methods.push(self.function_statement()?);
+        }
+        self.consume(
+            |kind| matches!(kind, TokenKind::RightBrace),
+            "expected '}' after the provider",
+        )?;
+        Ok(Statement::Provider {
             name,
-            parameters,
-            return_type,
-            body,
+            dependencies,
+            contract,
+            methods,
+        })
+    }
+
+    /// Parses a contract-to-provider binding.
+    fn bind_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
+        let contract = self.qualified_name("expected a contract name after 'bind'")?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::To),
+            "expected 'to' after the contract name",
+        )?;
+        let provider = self.qualified_name("expected a provider name after 'to'")?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::Semicolon),
+            "expected ';' after the binding",
+        )?;
+        Ok(Statement::Bind {
+            keyword,
+            contract,
+            provider,
         })
     }
 
@@ -156,7 +287,8 @@ impl Parser {
             return Err(syntax_error(
                 alias,
                 "selective imports cannot also declare a namespace alias",
-            ));
+            )
+            .with_code("ORNI-E128"));
         }
         self.consume(
             |kind| matches!(kind, TokenKind::Semicolon),
@@ -172,10 +304,7 @@ impl Parser {
 
     /// Parses one of Orni's built-in type names.
     fn type_name(&mut self) -> Result<TypeName, OrniError> {
-        let token = self.consume(
-            |kind| matches!(kind, TokenKind::Identifier(_)),
-            "expected a type name",
-        )?;
+        let token = self.qualified_name("expected a type name")?;
         let TokenKind::Identifier(name) = &token.kind else {
             unreachable!("the token was validated as an identifier")
         };
@@ -202,7 +331,8 @@ impl Parser {
                         return Err(syntax_error(
                             &size_token,
                             "string capacity must be a positive platform-sized integer",
-                        ));
+                        )
+                        .with_code("ORNI-E148"));
                     }
                     self.consume(
                         |kind| matches!(kind, TokenKind::Greater),
@@ -217,7 +347,7 @@ impl Parser {
             "bool" => Ok(TypeName::Bool),
             "char" => Ok(TypeName::Char),
             "unit" => Ok(TypeName::Unit),
-            _ => Err(syntax_error(&token, format!("unknown type '{name}'"))),
+            _ => Ok(TypeName::Contract(name.to_owned())),
         }
     }
 

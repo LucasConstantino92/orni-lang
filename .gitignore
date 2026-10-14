@@ -1,2 +1,5 @@
 /target
 /editors/vscode/*.vsix
+/editors/vscode/compiler/
+/editors/vscode/node_modules/
+/editors/vscode/.vscode-test/

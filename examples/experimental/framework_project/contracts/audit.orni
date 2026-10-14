@@ -1,0 +1,4 @@
+/// Describes application audit events without choosing an implementation.
+contract Audit {
+    func record(message: string) -> unit;
+}

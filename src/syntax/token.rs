@@ -61,6 +61,16 @@ pub(crate) enum TokenKind {
     Pub,
     /// The `import` keyword.
     Import,
+    /// The `contract` keyword.
+    Contract,
+    /// The `provider` keyword.
+    Provider,
+    /// The `for` keyword connecting a provider to a contract.
+    For,
+    /// The `bind` keyword.
+    Bind,
+    /// The `to` keyword connecting a binding to its provider.
+    To,
     /// The `as` keyword used by import aliases.
     As,
     /// The `print` keyword.

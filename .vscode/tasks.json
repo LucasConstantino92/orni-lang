@@ -10,6 +10,7 @@
         "--target",
         "wasm32-wasip1",
         "--",
+        "run",
         "${relativeFile}"
       ],
       "options": {
@@ -19,7 +20,9 @@
         "kind": "build",
         "isDefault": true
       },
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": [
+        "$rustc"
+      ]
     },
     {
       "label": "Orni: Run playground",
@@ -30,35 +33,72 @@
         "--target",
         "wasm32-wasip1",
         "--",
+        "run",
         "playground/main.orni"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "group": "build",
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "Orni: Check current file",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "run",
+        "--quiet",
+        "--target",
+        "wasm32-wasip1",
+        "--",
+        "check",
+        "${relativeFile}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
+      "problemMatcher": [
+        "$rustc"
+      ]
     },
     {
       "label": "Orni: Check project",
       "type": "process",
       "command": "cargo",
-      "args": ["check", "--all-targets", "--target", "wasm32-wasip1"],
+      "args": [
+        "check",
+        "--all-targets",
+        "--target",
+        "wasm32-wasip1"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "group": "test",
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": [
+        "$rustc"
+      ]
     },
     {
       "label": "Orni: Run tests",
       "type": "process",
       "command": "cargo",
-      "args": ["test", "--target", "wasm32-wasip1"],
+      "args": [
+        "test",
+        "--target",
+        "wasm32-wasip1"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
       "group": "test",
-      "problemMatcher": ["$rustc"]
+      "problemMatcher": [
+        "$rustc"
+      ]
     }
   ]
 }

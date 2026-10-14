@@ -2,15 +2,22 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   findClosestDeclaration,
+  findBindings,
   findBoundedStringViolations,
   findBoundedVariableViolations,
+  findContracts,
   findFunctions,
   findImports,
   findStringCapacityAnnotation,
   findUnusedImports,
   findUnusedPrivateFunctions,
   findVariables,
+  findProviders,
   importInsertionOffset,
+  providerSource,
+  inferIntegerType,
+  topLevelDeclarations,
+  snakeCaseTypeName,
   sortedImportStatements,
 } = require("../language-support");
 
@@ -23,6 +30,66 @@ test("finds documented functions", () => {
   assert.equal(definition.returnType, "int");
   assert.equal(definition.documentation, "Adds two values.");
   assert.equal(source.slice(definition.offset, definition.offset + 3), "add");
+});
+
+test("finds contracts and providers", () => {
+  const source = `
+contract Logger {
+  func log(message: string) -> unit;
+}
+provider ConsoleLogger for Logger {
+  func log(message: string) -> unit { print message; }
+}
+`;
+  const [contract] = findContracts(source);
+  const [provider] = findProviders(source);
+
+  assert.equal(contract.name, "Logger");
+  assert.deepEqual(contract.methods.map(({ name }) => name), ["log"]);
+  assert.deepEqual(provider, {
+    name: "ConsoleLogger",
+    dependencies: [],
+    contract: "Logger",
+    offset: source.indexOf("ConsoleLogger"),
+  });
+});
+
+test("finds provider dependencies", () => {
+  const source = `provider ConsoleAudit(logger: Logger, clock: Clock) for Audit {}`;
+  const [provider] = findProviders(source);
+
+  assert.deepEqual(provider.dependencies, ["logger: Logger", "clock: Clock"]);
+  assert.equal(provider.contract, "Audit");
+});
+
+test("finds dependency bindings", () => {
+  const source = "bind Logger to ConsoleLogger;\nbind Audit to ConsoleAudit;";
+
+  assert.deepEqual(
+    findBindings(source).map(({ contract, provider }) => ({ contract, provider })),
+    [
+      { contract: "Logger", provider: "ConsoleLogger" },
+      { contract: "Audit", provider: "ConsoleAudit" },
+    ],
+  );
+});
+
+test("generates a provider skeleton from every contract method", () => {
+  const [contract] = findContracts(`
+contract Clock {
+  func now() -> int;
+  func ready() -> bool;
+  func reset() -> unit;
+}
+`);
+  const generated = providerSource(contract, "SystemClock", "contracts.clock");
+
+  assert.match(generated, /import contracts\.clock\.\{Clock\};/);
+  assert.match(generated, /provider SystemClock for Clock/);
+  assert.match(generated, /func now\(\) -> int \{\n        return 0;/);
+  assert.match(generated, /func ready\(\) -> bool \{\n        return false;/);
+  assert.match(generated, /func reset\(\) -> unit \{\n    \}/);
+  assert.equal(snakeCaseTypeName("HTTPClock"), "http_clock");
 });
 
 test("finds functions and aliased dotted module imports", () => {
@@ -158,4 +225,26 @@ test("locates a bounded string annotation for editor quick fixes", () => {
 
   assert.equal(source.slice(annotation.offset, annotation.offset + annotation.length), "string<4>");
   assert.equal(findStringCapacityAnnotation(source, source.indexOf("name"), 8), undefined);
+});
+
+test("ignores fake declarations in comments and literals and handles quoted delimiters", () => {
+  const source = `// func fake() -> unit {}\nlet text = "contract Fake {}";\nfunc greet(name: string = "a,b)") -> string { return name; }`;
+  assert.equal(findFunctions(source).length, 1);
+  assert.deepEqual(findFunctions(source)[0].parameters, ['name: string = "a,b)"']);
+  assert.equal(findContracts(source).length, 0);
+});
+
+test("module exports exclude provider methods and function locals", () => {
+  const source = `contract Clock { func now() -> int; }\nprovider SystemClock for Clock { func now() -> int { return 0; } }\nfunc start() -> unit { let hidden = 1; }`;
+  assert.deepEqual(topLevelDeclarations(source, findFunctions(source)).map(({ name }) => name), ["start"]);
+  assert.deepEqual(topLevelDeclarations(source, findVariables(source)), []);
+});
+
+test("literal inference agrees with signed boundaries, uint64, and Orni escapes", () => {
+  assert.equal(inferIntegerType("-128"), "int8");
+  assert.equal(inferIntegerType("9223372036854775808"), "uint64");
+  assert.equal(inferIntegerType("18446744073709551616"), undefined);
+  assert.equal(findVariables('let text = "a\\nb";')[0].inferredType, "string<3>");
+  assert.equal(findVariables('let text = "a\\qb";')[0].inferredType, undefined);
+  assert.equal(findVariables('let initial = \'😀\';')[0].inferredType, "char");
 });

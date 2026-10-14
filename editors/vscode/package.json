@@ -2,7 +2,7 @@
   "name": "orni-language",
   "displayName": "Orni Language",
   "description": "Language support for the Orni programming language.",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "publisher": "orni-lang",
   "license": "MIT",
   "repository": {
@@ -10,13 +10,32 @@
     "url": "https://github.com/LucasConstantino92/orni-lang.git"
   },
   "engines": {
-    "vscode": ">=1.80.0"
+    "vscode": ">=1.95.0"
   },
-  "categories": ["Programming Languages"],
-  "keywords": ["orni", "language", "syntax"],
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "orni",
+    "language",
+    "syntax"
+  ],
   "files": [
     "extension.js",
     "language-support.js",
+    "project-support.js",
+    "compiler-client.js",
+    "diagnostic-guidance.js",
+    "diagnostic-catalog.js",
+    "dependency-index.js",
+    "diagnostics.js",
+    "diagnostic-ui.js",
+    "code-actions.js",
+    "module-actions.js",
+    "editor-symbols.js",
+    "editor-navigation.js",
+    "compiler",
+    "node_modules/@iarna/toml/**",
     "LICENSE",
     "icons",
     "syntaxes",
@@ -24,9 +43,51 @@
     "README.md"
   ],
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:orni"],
+  "scripts": {
+    "vscode:prepublish": "node ../../tools/package-editor.mjs",
+    "test": "node --test test/language-support.test.js test/project-support.test.js test/diagnostic-guidance.test.js test/dependency-index.test.js",
+    "test:host": "node test/run-host.cjs"
+  },
+  "activationEvents": [
+    "onLanguage:orni",
+    "workspaceContains:**/*.orni"
+  ],
   "contributes": {
+    "configuration": {
+      "title": "Orni",
+      "properties": {
+        "orni.compilerPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Path to an installed Orni executable. Leave empty to use the bundled compiler."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "orni.quickFix",
+        "key": "ctrl+[Period]",
+        "when": "editorTextFocus && editorLangId == orni"
+      }
+    ],
     "commands": [
+      {
+        "command": "orni.explainDiagnostic",
+        "title": "Orni: Explain Diagnostic"
+      },
+      {
+        "command": "orni.quickFix",
+        "title": "Orni: Quick Fix"
+      },
+      {
+        "command": "orni.analyzeWorkspace",
+        "title": "Orni: Analyze Workspace"
+      },
+      {
+        "command": "orni.validateApplication",
+        "title": "Orni: Validate Application"
+      },
       {
         "command": "orni.checkModule",
         "title": "Orni: Check Current File as Module"
@@ -35,8 +96,13 @@
     "languages": [
       {
         "id": "orni",
-        "aliases": ["Orni", "orni"],
-        "extensions": [".orni"],
+        "aliases": [
+          "Orni",
+          "orni"
+        ],
+        "extensions": [
+          ".orni"
+        ],
         "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icons/orni-file.png",
@@ -51,5 +117,14 @@
         "path": "./syntaxes/orni.tmLanguage.json"
       }
     ]
+  },
+  "dependencies": {
+    "@iarna/toml": "2.2.5"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "yaml": "2.9.1",
+    "yauzl": "3.4.0"
   }
 }

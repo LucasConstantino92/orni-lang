@@ -1,3 +1,4 @@
+// Intentional runtime error: run this file to test division-by-zero protection. Static analysis may pass.
 // Expected: Runtime error instead of an unsafe numeric result.
 let total = 42;
 let divisor = 0;

@@ -9,6 +9,7 @@
     { "include": "#numbers" },
     { "include": "#types" },
     { "include": "#functionDeclarations" },
+    { "include": "#frameworkDeclarations" },
     { "include": "#selectiveImports" },
     { "include": "#keywords" },
     { "include": "#constants" },
@@ -74,6 +75,26 @@
         }
       ]
     },
+    "frameworkDeclarations": {
+      "patterns": [
+        {
+          "match": "\\b(contract)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.contract.orni" },
+            "2": { "name": "entity.name.type.contract.orni" }
+          }
+        },
+        {
+          "match": "\\b(provider)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\([^)]*\\)\\s*)?(for)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.provider.orni" },
+            "2": { "name": "entity.name.type.provider.orni" },
+            "3": { "name": "keyword.control.orni" },
+            "4": { "name": "entity.name.type.contract.orni" }
+          }
+        }
+      ]
+    },
     "selectiveImports": {
       "patterns": [
         {
@@ -89,11 +110,11 @@
       "patterns": [
         {
           "name": "keyword.control.orni",
-          "match": "\\b(?:if|else|return|import|as)\\b"
+          "match": "\\b(?:if|else|return|import|as|for|bind|to)\\b"
         },
         {
           "name": "storage.type.orni",
-          "match": "\\b(?:let|func)\\b"
+          "match": "\\b(?:let|func|contract|provider)\\b"
         },
         {
           "name": "support.function.orni",

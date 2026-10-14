@@ -1,0 +1,25 @@
+// Intentional compile-time error: this cycle must be broken by changing the provider dependencies.
+// This file intentionally creates a circular provider dependency.
+
+contract Logger {
+    func log(message: string) -> unit;
+}
+
+contract Audit {
+    func record(message: string) -> unit;
+}
+
+provider ConsoleLogger(audit: Audit) for Logger {
+    func log(message: string) -> unit {
+        audit.record(message);
+    }
+}
+
+provider ConsoleAudit(logger: Logger) for Audit {
+    func record(message: string) -> unit {
+        logger.log(message);
+    }
+}
+
+bind Logger to ConsoleLogger;
+bind Audit to ConsoleAudit;

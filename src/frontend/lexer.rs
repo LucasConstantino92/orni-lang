@@ -12,6 +12,7 @@ pub(crate) struct Lexer {
     line: usize,
     column: usize,
     source_name: Option<Arc<str>>,
+    source_bytes: usize,
 }
 
 impl Lexer {
@@ -21,11 +22,12 @@ impl Lexer {
     /// borrow of the original source string.
     pub fn new(source: &str) -> Self {
         Self {
-            chars: source.chars().collect(),
+            chars: source.chars().take(1_048_577).collect(),
             current: 0,
             line: 1,
             column: 1,
             source_name: None,
+            source_bytes: source.len(),
         }
     }
 
@@ -37,6 +39,12 @@ impl Lexer {
 
     /// Scans the entire source and appends a final [`TokenKind::Eof`] marker.
     pub fn scan_tokens(mut self) -> Result<Vec<Token>, OrniError> {
+        if self.source_bytes > 1_048_576 {
+            return Err(
+                OrniError::lexical(1, 1, "source exceeds the limit of 1 MiB")
+                    .with_code("ORNI-E141"),
+            );
+        }
         let mut tokens = Vec::new();
 
         while !self.is_at_end() {
@@ -83,11 +91,20 @@ impl Lexer {
                         line,
                         column,
                         format!("unexpected character '{other}'"),
-                    ));
+                    )
+                    .with_code("ORNI-E146"));
                 }
             };
 
             tokens.push(self.token(kind, line, column, self.line, self.column));
+            if tokens.len() > 20_000 {
+                return Err(OrniError::lexical(
+                    line,
+                    column,
+                    "source exceeds the limit of 20000 tokens",
+                )
+                .with_code("ORNI-E141"));
+            }
         }
 
         tokens.push(self.token(
@@ -124,19 +141,23 @@ impl Lexer {
     /// Scans exactly one character after its opening quote has been consumed.
     fn character(&mut self, line: usize, column: usize) -> Result<TokenKind, OrniError> {
         let Some(character) = self.peek() else {
-            return Err(OrniError::lexical(line, column, "unterminated character"));
+            return Err(
+                OrniError::lexical(line, column, "unterminated character").with_code("ORNI-E144")
+            );
         };
         if character == '\'' || character == '\n' {
             return Err(OrniError::lexical(
                 line,
                 column,
                 "a character literal must contain exactly one character",
-            ));
+            )
+            .with_code("ORNI-E144"));
         }
 
         let value = if self.advance() == '\\' {
             let Some(escaped) = self.peek() else {
-                return Err(OrniError::lexical(line, column, "unterminated character"));
+                return Err(OrniError::lexical(line, column, "unterminated character")
+                    .with_code("ORNI-E144"));
             };
             self.advance();
             match escaped {
@@ -149,7 +170,8 @@ impl Lexer {
                         line,
                         column,
                         format!("unsupported character escape '\\{other}'"),
-                    ));
+                    )
+                    .with_code("ORNI-E145"));
                 }
             }
         } else {
@@ -161,7 +183,8 @@ impl Lexer {
                 line,
                 column,
                 "a character literal must contain exactly one character",
-            ));
+            )
+            .with_code("ORNI-E144"));
         }
         Ok(TokenKind::Char(value))
     }
@@ -187,14 +210,21 @@ impl Lexer {
                     't' => '\t',
                     '"' => '"',
                     '\\' => '\\',
-                    other => other,
+                    other => {
+                        return Err(OrniError::lexical(
+                            line,
+                            column,
+                            format!("unsupported string escape '\\{other}'"),
+                        )
+                        .with_code("ORNI-E145"));
+                    }
                 });
             } else {
                 value.push(character);
             }
         }
 
-        Err(OrniError::lexical(line, column, "unterminated string"))
+        Err(OrniError::lexical(line, column, "unterminated string").with_code("ORNI-E143"))
     }
 
     /// Scans a numeric literal after its first digit has been consumed.
@@ -239,6 +269,11 @@ impl Lexer {
             "func" => TokenKind::Func,
             "pub" => TokenKind::Pub,
             "import" => TokenKind::Import,
+            "contract" => TokenKind::Contract,
+            "provider" => TokenKind::Provider,
+            "for" => TokenKind::For,
+            "bind" => TokenKind::Bind,
+            "to" => TokenKind::To,
             "as" => TokenKind::As,
             "print" => TokenKind::Print,
             "return" => TokenKind::Return,

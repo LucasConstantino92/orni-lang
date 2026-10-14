@@ -19,7 +19,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    permissions:
+      contents: read
+
   verify-package-release:
+    needs: validate
     name: Verify, package, and release
     runs-on: ubuntu-latest
     env:
@@ -44,25 +52,22 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add wasm32-wasip1
-          rustup component add clippy
+          rustup component add clippy rustfmt
 
       - name: Install Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
 
-      - name: Run Rust tests
-        run: cargo test --target wasm32-wasip1
+      - name: Install locked editor dependencies
+        run: npm ci --prefix editors/vscode
 
-      - name: Run Rust lints
-        run: cargo clippy --all-targets --target wasm32-wasip1 -- -D warnings
-
-      - name: Run editor tests
-        run: node --test editors/vscode/test/language-support.test.js
+      - name: Verify release version consistency
+        run: node tools/verify-versions.mjs "$RELEASE_TAG"
 
       - name: Package editor extension
         working-directory: editors/vscode
-        run: npx --yes @vscode/vsce package --allow-missing-repository
+        run: npx --no-install vsce package --allow-missing-repository
 
       - name: Locate packaged extension
         id: package
@@ -74,6 +79,11 @@ jobs:
             exit 1
           fi
           echo "vsix_path=$vsix_path" >> "$GITHUB_OUTPUT"
+
+      - name: Verify packaged compiler and runtime dependencies
+        env:
+          VSIX_PATH: ${{ steps.package.outputs.vsix_path }}
+        run: node tools/verify-vsix.mjs "$VSIX_PATH"
 
       - name: Create or update GitHub Release
         env:

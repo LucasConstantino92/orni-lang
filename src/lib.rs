@@ -11,10 +11,14 @@ use std::path::Path;
 
 mod diagnostics;
 mod frontend;
+mod project;
+#[cfg(test)]
+mod regression_tests;
 mod runtime;
 mod syntax;
 
 pub use diagnostics::{DiagnosticSeverity, OrniDiagnostic, OrniError};
+pub use project::Project;
 
 use frontend::{Lexer, ModuleLoader, Parser, TypeChecker};
 pub use runtime::ExecutionLimits;
@@ -35,8 +39,86 @@ pub fn check_file(path: impl AsRef<Path>) -> Result<(), OrniError> {
 
 /// Checks a file-based program and returns every non-fatal compiler diagnostic.
 pub fn diagnose_file(path: impl AsRef<Path>) -> Result<Vec<OrniDiagnostic>, OrniError> {
-    let (program, diagnostics) = ModuleLoader::new().load_with_diagnostics(path.as_ref())?;
-    TypeChecker::new().check(&program)?;
+    let (program, mut diagnostics) = ModuleLoader::new().load_with_diagnostics(path.as_ref())?;
+    diagnostics.extend(TypeChecker::new().check_with_diagnostics(&program)?);
+    Ok(diagnostics)
+}
+
+/// Checks an application using one unsaved editor buffer in its module graph.
+pub fn diagnose_file_with_source(
+    entry: impl AsRef<Path>,
+    file: impl AsRef<Path>,
+    source: &str,
+) -> Result<Vec<OrniDiagnostic>, OrniError> {
+    let (program, mut diagnostics) = ModuleLoader::new()
+        .with_source(file.as_ref(), source)
+        .load_with_diagnostics(entry.as_ref())?;
+    diagnostics.extend(TypeChecker::new().check_with_diagnostics(&program)?);
+    Ok(diagnostics)
+}
+
+/// Checks a project with unsaved files encoded as a TOML `files` table.
+///
+/// Each key is a project-relative path and each value is its UTF-8 source text.
+/// This editor protocol never writes buffers to disk.
+pub fn diagnose_project_buffers(
+    entry: impl AsRef<Path>,
+    buffers: &str,
+) -> Result<Vec<OrniDiagnostic>, OrniError> {
+    diagnose_buffers(entry.as_ref(), buffers, false)
+}
+
+/// Checks a reusable module with unsaved buffers, without saving editor files.
+pub fn diagnose_module_buffers(
+    module: impl AsRef<Path>,
+    buffers: &str,
+) -> Result<Vec<OrniDiagnostic>, OrniError> {
+    diagnose_buffers(module.as_ref(), buffers, true)
+}
+
+fn diagnose_buffers(
+    entry: &Path,
+    buffers: &str,
+    as_module: bool,
+) -> Result<Vec<OrniDiagnostic>, OrniError> {
+    if buffers.len() > 8_388_608 {
+        return Err(OrniError::module(
+            1,
+            1,
+            "editor buffers exceed the limit of 8 MiB",
+        ));
+    }
+    let document = buffers
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| OrniError::module(1, 1, format!("invalid editor buffers: {error}")))?;
+    let files = document
+        .get("files")
+        .and_then(toml_edit::Item::as_table_like)
+        .ok_or_else(|| OrniError::module(1, 1, "editor buffers require a files table"))?;
+    if files.len() > 256 {
+        return Err(OrniError::module(1, 1, "editor buffers exceed 256 files"));
+    }
+    let mut loader = ModuleLoader::new();
+    for (file, value) in files.iter() {
+        let source = value
+            .as_str()
+            .ok_or_else(|| OrniError::module(1, 1, "editor buffer values must be strings"))?;
+        loader = loader.with_source(Path::new(file), source);
+    }
+    let (program, mut diagnostics) = if as_module {
+        loader.load_library_with_diagnostics(entry)?
+    } else {
+        loader.load_with_diagnostics(entry)?
+    };
+    let checker = TypeChecker::new();
+    diagnostics.extend(
+        if as_module {
+            checker.library()
+        } else {
+            checker
+        }
+        .check_with_diagnostics(&program)?,
+    );
     Ok(diagnostics)
 }
 
@@ -47,14 +129,18 @@ pub fn diagnose_file(path: impl AsRef<Path>) -> Result<Vec<OrniDiagnostic>, Orni
 /// library module independently from an application entry file.
 pub fn check_module(path: impl AsRef<Path>) -> Result<(), OrniError> {
     let program = ModuleLoader::new().load_library(path.as_ref())?;
-    TypeChecker::new().check(&program)
+    TypeChecker::new().library().check(&program)
 }
 
 /// Checks a reusable module and returns every non-fatal compiler diagnostic.
 pub fn diagnose_module(path: impl AsRef<Path>) -> Result<Vec<OrniDiagnostic>, OrniError> {
-    let (program, diagnostics) =
+    let (program, mut diagnostics) =
         ModuleLoader::new().load_library_with_diagnostics(path.as_ref())?;
-    TypeChecker::new().check(&program)?;
+    diagnostics.extend(
+        TypeChecker::new()
+            .library()
+            .check_with_diagnostics(&program)?,
+    );
     Ok(diagnostics)
 }
 
@@ -77,7 +163,9 @@ pub fn run(source: &str) -> Result<String, OrniError> {
 
 /// Runs an Orni entry file together with its recursively imported modules.
 pub fn run_file(path: impl AsRef<Path>) -> Result<String, OrniError> {
-    run_file_with_limits(path, ExecutionLimits::default())
+    let limits = Project::discover(path.as_ref())?
+        .map_or_else(ExecutionLimits::default, |project| project.runtime);
+    run_file_with_limits(path, limits)
 }
 
 /// Runs a file-based Orni program with explicit resource boundaries.
@@ -141,7 +229,7 @@ mod tests {
         let error = run("print missing;").expect_err("the program should fail");
         assert_eq!(
             error.to_string(),
-            "Semantic error [ORNI-T001] at line 1, column 7 to line 1, column 14: undefined variable 'missing'"
+            "Semantic error [ORNI-E103] at line 1, column 7 to line 1, column 14: undefined variable 'missing'"
         );
     }
 
@@ -196,7 +284,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Semantic error [ORNI-T001] at line 1, column 1 to line 1, column 7: return can only be used inside a function"
+            "Semantic error [ORNI-E118] at line 1, column 1 to line 1, column 7: return can only be used inside a function"
         );
     }
 
@@ -288,7 +376,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Semantic error [ORNI-T001] at line 1, column 5 to line 1, column 12: variable value expects int, but found string<3>"
+            "Semantic error [ORNI-E107] at line 1, column 5 to line 1, column 12: variable value expects int, but found string<3>"
         );
     }
 
@@ -558,7 +646,7 @@ mod tests {
         let error = check_module("examples/05_modules.orni")
             .expect_err("an entry program must not be accepted as a reusable module");
         assert!(error.to_string().contains(
-            "imported modules may only contain imports, functions, and module variables"
+            "imported modules may only contain imports, contracts, providers, functions, and module variables"
         ));
     }
 
@@ -664,5 +752,243 @@ mod tests {
                 .message()
                 .contains("private function '_unused' is never used")
         );
+    }
+
+    #[test]
+    fn injects_a_bound_provider_through_its_contract() {
+        let output = run(r#"
+                contract Logger {
+                    func log(message: string) -> unit;
+                }
+                provider ConsoleLogger for Logger {
+                    func log(message: string) -> unit { print message; }
+                }
+                bind Logger to ConsoleLogger;
+                func start(logger: Logger) -> unit {
+                    logger.log("Orni application started");
+                }
+                start();
+            "#)
+        .expect("the bound provider should be injected automatically");
+
+        assert_eq!(output, "Orni application started\n");
+    }
+
+    #[test]
+    fn validates_provider_contract_implementations() {
+        let missing_method = check(
+            r#"
+                contract Logger { func log(message: string) -> unit; }
+                provider EmptyLogger for Logger {}
+            "#,
+        )
+        .expect_err("a provider must implement every contract method");
+        assert!(
+            missing_method
+                .to_string()
+                .contains("provider 'EmptyLogger' is missing contract method 'log'")
+        );
+
+        let wrong_signature = check(
+            r#"
+                contract Logger { func log(message: string) -> unit; }
+                provider NumberLogger for Logger {
+                    func log(message: int) -> unit { print message; }
+                }
+            "#,
+        )
+        .expect_err("provider signatures must match their contracts");
+        assert!(
+            wrong_signature
+                .to_string()
+                .contains("does not match contract 'Logger'")
+        );
+    }
+
+    #[test]
+    fn requires_a_binding_before_dependency_injection() {
+        let error = check(
+            r#"
+                contract Logger { func log(message: string) -> unit; }
+                provider ConsoleLogger for Logger {
+                    func log(message: string) -> unit { print message; }
+                }
+                func start(logger: Logger) -> unit { logger.log("start"); }
+                start();
+            "#,
+        )
+        .expect_err("injected contracts need one provider binding");
+
+        assert!(
+            error
+                .to_string()
+                .contains("contract 'Logger' has no provider binding")
+        );
+    }
+
+    #[test]
+    fn injects_contract_dependencies_into_provider_methods() {
+        let output = run(r#"
+                contract Logger { func log(message: string) -> unit; }
+                contract Audit { func record(message: string) -> unit; }
+                provider ConsoleLogger for Logger {
+                    func log(message: string) -> unit { print message; }
+                }
+                provider ConsoleAudit(logger: Logger) for Audit {
+                    func record(message: string) -> unit {
+                        logger.log("AUDIT: " + message);
+                    }
+                }
+                bind Logger to ConsoleLogger;
+                bind Audit to ConsoleAudit;
+                func start(audit: Audit) -> unit { audit.record("ready"); }
+                start();
+            "#)
+        .expect("provider dependencies should be injected automatically");
+
+        assert_eq!(output, "AUDIT: ready\n");
+    }
+
+    #[test]
+    fn validates_provider_dependencies_before_execution() {
+        let missing_binding = check(
+            r#"
+                contract Logger { func log(message: string) -> unit; }
+                contract Audit { func record(message: string) -> unit; }
+                provider ConsoleAudit(logger: Logger) for Audit {
+                    func record(message: string) -> unit { logger.log(message); }
+                }
+                bind Audit to ConsoleAudit;
+            "#,
+        )
+        .expect_err("provider dependencies require a configured binding");
+        assert!(
+            missing_binding
+                .to_string()
+                .contains("Audit -> Logger; contract 'Logger' has no provider binding")
+        );
+
+        let invalid_type = check(
+            r#"
+                contract Audit { func record(message: string) -> unit; }
+                provider ConsoleAudit(prefix: string) for Audit {
+                    func record(message: string) -> unit { print message; }
+                }
+                bind Audit to ConsoleAudit;
+            "#,
+        )
+        .expect_err("provider dependencies must be contracts");
+        assert!(
+            invalid_type
+                .to_string()
+                .contains("provider dependency 'prefix' must use a contract type")
+        );
+    }
+
+    #[test]
+    fn reports_the_complete_missing_provider_dependency_chain() {
+        let error = check(
+            r#"
+                contract Clock { func now() -> int; }
+                contract Logger { func log(message: string) -> unit; }
+                contract Audit { func record(message: string) -> unit; }
+
+                provider ConsoleAudit(logger: Logger) for Audit {
+                    func record(message: string) -> unit { logger.log(message); }
+                }
+                provider TimestampLogger(clock: Clock) for Logger {
+                    func log(message: string) -> unit { print message; }
+                }
+
+                bind Audit to ConsoleAudit;
+                bind Logger to TimestampLogger;
+            "#,
+        )
+        .expect_err("a missing transitive binding must report its complete chain");
+
+        assert!(error.to_string().contains(
+            "provider dependency chain is incomplete: Audit -> Logger -> Clock; contract 'Clock' has no provider binding"
+        ));
+    }
+
+    #[test]
+    fn rejects_circular_provider_dependency_graphs() {
+        let error = check(
+            r#"
+                contract Logger { func log(message: string) -> unit; }
+                contract Audit { func record(message: string) -> unit; }
+
+                provider ConsoleLogger(audit: Audit) for Logger {
+                    func log(message: string) -> unit { audit.record(message); }
+                }
+                provider ConsoleAudit(logger: Logger) for Audit {
+                    func record(message: string) -> unit { logger.log(message); }
+                }
+
+                bind Logger to ConsoleLogger;
+                bind Audit to ConsoleAudit;
+            "#,
+        )
+        .expect_err("provider cycles must fail before execution");
+
+        assert!(
+            error
+                .to_string()
+                .contains("circular provider dependency detected: Audit -> Logger -> Audit")
+        );
+    }
+
+    #[test]
+    fn warns_about_bindings_that_are_never_injected() {
+        // Keep this assertion independent from examples edited during manual testing.
+        let fixture = "examples/experimental/errors/unused_binding.orni";
+        let diagnostics = super::diagnose_file_with_source(fixture, fixture, r#"
+            contract Logger { func log(message: string) -> unit; }
+            provider ConsoleLogger for Logger { func log(message: string) -> unit { print message; } }
+            bind Logger to ConsoleLogger;
+        "#).expect("an unused binding should remain a valid program");
+        let warning = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code() == "ORNI-W004")
+            .expect("the unused binding warning should be present");
+
+        assert_eq!(warning.severity(), DiagnosticSeverity::Warning);
+        assert!(
+            warning
+                .message()
+                .contains("binding for contract 'Logger' is never injected")
+        );
+    }
+
+    #[test]
+    fn resolves_framework_declarations_independently_of_source_order() {
+        let output = run(r#"
+                start();
+                bind Audit to ConsoleAudit;
+                bind Logger to ConsoleLogger;
+
+                provider ConsoleAudit(logger: Logger) for Audit {
+                    func record(message: string) -> unit { logger.log(message); }
+                }
+                contract Audit { func record(message: string) -> unit; }
+
+                func start(audit: Audit) -> unit { audit.record("ordered"); }
+
+                provider ConsoleLogger for Logger {
+                    func log(message: string) -> unit { print message; }
+                }
+                contract Logger { func log(message: string) -> unit; }
+            "#)
+        .expect("framework declarations should be resolved before execution");
+
+        assert_eq!(output, "ordered\n");
+    }
+
+    #[test]
+    fn loads_contracts_and_providers_from_separate_modules() {
+        let output = run_file("examples/experimental/framework_project/main.orni")
+            .expect("framework declarations should preserve one identity across modules");
+
+        assert_eq!(output, "AUDIT: Orni modular application started\n");
     }
 }

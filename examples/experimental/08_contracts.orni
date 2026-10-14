@@ -1,0 +1,20 @@
+// Experimental Orni 0.8.0 syntax. This is not a released API yet.
+
+contract Logger {
+    /// Writes one application message.
+    func log(message: string) -> unit;
+}
+
+provider ConsoleLogger for Logger {
+    func log(message: string) -> unit {
+        print message;
+    }
+}
+
+bind Logger to ConsoleLogger;
+
+func start(logger: Logger) -> unit {
+    logger.log("Orni application started");
+}
+
+start();

@@ -1,3 +1,4 @@
+// Intentional runtime error: run this file to test recursion limits. Static analysis may pass.
 // Expected: Runtime error when recursion reaches the configured call limit.
 func recurse(depth: int) -> int {
     return recurse(depth + 1);

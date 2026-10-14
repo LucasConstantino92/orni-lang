@@ -1,38 +1,154 @@
 const identifierPattern = /[A-Za-z_][A-Za-z0-9_]*/;
 
-/** Finds all documented function declarations in an Orni source document. */
+/** Masks comments and literals while keeping source offsets and line breaks intact. */
+function syntaxMask(source) {
+  return source.replace(/\/\/[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g,
+    (text) => text.replace(/[^\r\n]/g, " "));
+}
+
+/** Splits arguments without treating quoted commas or nested calls as separators. */
+function splitParameters(source) {
+  const mask = syntaxMask(source);
+  const result = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < mask.length; index++) {
+    if ("([{".includes(mask[index])) depth++;
+    if (")]}".includes(mask[index])) depth--;
+    if (mask[index] === "," && depth === 0) {
+      result.push(source.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  result.push(source.slice(start).trim());
+  return result.filter(Boolean);
+}
+
+/** Finds the matching delimiter in a masked source document. */
+function closingDelimiter(mask, start, open, close) {
+  let depth = 0;
+  for (let index = start; index < mask.length; index++) {
+    if (mask[index] === open) depth++;
+    if (mask[index] === close && --depth === 0) return index;
+  }
+  return -1;
+}
+
+/** Filters module exports without exposing function locals or provider methods. */
+function topLevelDeclarations(source, declarations) {
+  const mask = syntaxMask(source);
+  const depths = new Int32Array(mask.length + 1);
+  for (let index = 0; index < mask.length; index++) {
+    depths[index + 1] = depths[index] + (mask[index] === "{" ? 1 : mask[index] === "}" ? -1 : 0);
+  }
+  return declarations.filter(({ offset }) => depths[offset] === 0);
+}
+
+/** Finds dependency contract declarations and their required methods. */
+function findContracts(source) {
+  const mask = syntaxMask(source);
+  const pattern = /\bcontract[ \t]+([A-Za-z_][A-Za-z0-9_]*)\s*\{/g;
+  return Array.from(mask.matchAll(pattern), (match) => {
+    const opening = match.index + match[0].lastIndexOf("{");
+    const closing = closingDelimiter(mask, opening, "{", "}");
+    return {
+      name: match[1],
+      methods: findFunctions(source.slice(opening + 1, closing < 0 ? source.length : closing)),
+      offset: match.index + match[0].indexOf(match[1]),
+    };
+  });
+}
+
+/** Finds provider declarations and their implemented contracts. */
+function findProviders(source) {
+  const pattern = /\bprovider\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\)\s*)?for\s+([A-Za-z_][A-Za-z0-9_.]*)/g;
+  return Array.from(syntaxMask(source).matchAll(pattern), (match) => ({
+    name: match[1],
+    dependencies: (match[2] ?? "")
+      .split(",")
+      .map((dependency) => dependency.trim())
+      .filter(Boolean),
+    contract: match[3],
+    offset: match.index + match[0].indexOf(match[1]),
+  }));
+}
+
+/** Finds dependency bindings declared by an executable Orni entry file. */
+function findBindings(source) {
+  const pattern = /\bbind\s+([A-Za-z_][A-Za-z0-9_.]*)\s+to\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;/g;
+  return Array.from(syntaxMask(source).matchAll(pattern), (match) => ({
+    contract: match[1],
+    provider: match[2],
+    offset: match.index,
+    length: match[0].length,
+  }));
+}
+
+/** Converts a public Orni type name into a conventional module file name. */
+function snakeCaseTypeName(name) {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z])([A-Z][a-z])/g, "$1_$2")
+    .toLowerCase();
+}
+
+/** Returns a safe placeholder expression for a generated provider method. */
+function defaultValueForType(typeName) {
+  if (typeName === "bool") return "false";
+  if (typeName === "double") return "0.0";
+  if (typeName === "char") return "' '";
+  if (/^string(?:<\d+>)?$/.test(typeName)) return '""';
+  if (/^(?:u?int)(?:8|16|32|64)?$/.test(typeName)) return "0";
+  return undefined;
+}
+
+/** Generates an editable provider implementation from a contract declaration. */
+function providerSource(contract, providerName, contractModulePath) {
+  const importLine = contractModulePath
+    ? `import ${contractModulePath}.{${contract.name}};\n\n`
+    : "";
+  const methods = contract.methods.map((method) => {
+    const value = defaultValueForType(method.returnType);
+    const body = method.returnType === "unit"
+      ? ""
+      : value === undefined
+        ? "        // TODO: Return a value compatible with this contract method.\n"
+        : `        return ${value};\n`;
+    const documentation = method.documentation
+      ? method.documentation.split("\n").map((line) => `    /// ${line}\n`).join("")
+      : "";
+    return `${documentation}    func ${method.name}(${method.parameters.join(", ")}) -> ${method.returnType} {\n${body}    }`;
+  }).join("\n\n");
+  return `${importLine}/// Provides the default ${contract.name} implementation.\nprovider ${providerName} for ${contract.name} {\n${methods}\n}\n`;
+}
+
+/** Finds documented functions using balanced parameters and literal-aware scanning. */
 function findFunctions(source) {
-  const pattern = /((?:^[ \t]*\/\/\/[^\r\n]*(?:\r?\n|$))*)^[ \t]*(?:pub[ \t]+)?func[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(([^)]*)\)[ \t]*->[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?)/gm;
+  const mask = syntaxMask(source);
+  const pattern = /\bfunc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
   const functions = [];
-
-  for (const match of source.matchAll(pattern)) {
-    const name = match[2];
-    const nameOffset = match.index + match[0].lastIndexOf(name);
-    const documentation = match[1]
-      .split(/\r?\n/)
-      .map((line) => line.replace(/^\s*\/\/\/\s?/, "").trimEnd())
-      .filter(Boolean)
-      .join("\n");
-
+  for (const match of mask.matchAll(pattern)) {
+    const opening = match.index + match[0].lastIndexOf("(");
+    const closing = closingDelimiter(mask, opening, "(", ")");
+    if (closing < 0) continue;
+    const result = mask.slice(closing + 1).match(/^\s*->\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*<\s*\d+\s*>)?)/);
+    if (!result) continue;
+    const docs = source.slice(0, match.index).match(/((?:[ \t]*\/\/\/[^\r\n]*\r?\n)+)[ \t]*$/)?.[1] || "";
     functions.push({
-      name,
-      parameters: match[3]
-        .split(",")
-        .map((parameter) => parameter.trim())
-        .filter(Boolean),
-      returnType: match[4],
-      documentation,
-      offset: nameOffset,
+      name: match[1],
+      parameters: splitParameters(source.slice(opening + 1, closing)),
+      returnType: result[1].replace(/\s/g, ""),
+      documentation: docs.split(/\r?\n/).map((line) => line.replace(/^\s*\/\/\/\s?/, "").trimEnd()).filter(Boolean).join("\n"),
+      offset: match.index + match[0].indexOf(match[1]),
     });
   }
-
   return functions;
 }
 
 /** Finds dotted file-module imports in an Orni source document. */
 function findImports(source) {
   const pattern = /^[ \t]*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\.\{([^}]*)\})?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;/gm;
-  return Array.from(source.matchAll(pattern), (match) => {
+  return Array.from(syntaxMask(source).matchAll(pattern), (match) => {
     const selectionOffset = match[2] === undefined
       ? undefined
       : match.index + match[0].indexOf(`{${match[2]}}`) + 1;
@@ -122,12 +238,13 @@ function importInsertionOffset(source) {
 
 /** Finds every variable declaration in an Orni source document. */
 function findVariables(source) {
-  const pattern = /\blet[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?))?[ \t]*=[ \t]*([^;]+)/g;
-  return Array.from(source.matchAll(pattern), (match) => ({
+  const pattern = /\blet[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*(?:<\d+>)?))?[ \t]*=/g;
+  const mask = syntaxMask(source);
+  return Array.from(mask.matchAll(pattern), (match) => ({
     name: match[1],
     typeName: match[2],
-    inferredType: inferExpressionType(match[3].trim()),
-    offset: match.index + match[0].lastIndexOf(match[1]),
+    inferredType: inferExpressionType(source.slice(match.index + match[0].length, mask.indexOf(";", match.index) < 0 ? source.length : mask.indexOf(";", match.index)).trim()),
+    offset: match.index + match[0].indexOf(match[1]),
   }));
 }
 
@@ -135,26 +252,34 @@ function findVariables(source) {
 function inferExpressionType(expression) {
   if (/^"(?:\\.|[^"\\])*"$/.test(expression)) {
     try {
-      return `string<${Buffer.byteLength(JSON.parse(expression), "utf8")}>`;
+      return `string<${Buffer.byteLength(decodeString(expression), "utf8")}>`;
     } catch {
       return undefined;
     }
   }
-  if (/^'(?:\\[nt'\\]|[^'\r\n])'$/.test(expression)) return "char";
+  if (/^'(?:\\[nt'\\]|[^'\r\n])'$/u.test(expression)) return "char";
   if (/^(?:true|false)$/.test(expression)) return "bool";
   if (/^-?\d+\.\d+$/.test(expression)) return "double";
   if (/^-?\d+$/.test(expression)) return inferIntegerType(expression);
   return undefined;
 }
 
-/** Chooses the smallest signed integer type that safely contains a literal. */
+/** Decodes exactly the escapes accepted by the Orni lexer. */
+function decodeString(literal) {
+  if (!/^"(?:\\[nt"\\]|[^"\\])*"$/.test(literal)) throw new Error("Invalid Orni string escape.");
+  return literal.slice(1, -1).replace(/\\([nt"\\])/g, (_, escape) => ({ n: "\n", t: "\t", '"': '"', "\\": "\\" })[escape]);
+}
+
+/** Chooses the smallest signed range, falling back to uint64 for larger positives. */
 function inferIntegerType(expression) {
   try {
     const value = BigInt(expression);
     if (value >= -128n && value <= 127n) return "int8";
     if (value >= -32768n && value <= 32767n) return "int16";
     if (value >= -2147483648n && value <= 2147483647n) return "int32";
-    return "int";
+    if (value >= -9223372036854775808n && value <= 9223372036854775807n) return "int";
+    if (value >= 0n && value <= 18446744073709551615n) return "uint64";
+    return undefined;
   } catch {
     return undefined;
   }
@@ -167,7 +292,7 @@ function findBoundedVariableViolations(source) {
   for (const match of source.matchAll(pattern)) {
     try {
       const maximum = Number(match[1]);
-      const actual = Buffer.byteLength(JSON.parse(match[2]), "utf8");
+      const actual = Buffer.byteLength(decodeString(match[2]), "utf8");
       if (actual > maximum) {
         const literalOffset = match.index + match[0].lastIndexOf(match[2]);
         violations.push({
@@ -222,7 +347,7 @@ function findBoundedStringViolations(source) {
         const maximum = limits[index];
         if (maximum === undefined || !/^"(?:\\.|[^"\\])*"$/.test(argument)) continue;
         try {
-          const actual = Buffer.byteLength(JSON.parse(argument), "utf8");
+          const actual = Buffer.byteLength(decodeString(argument), "utf8");
           if (actual > maximum) {
             violations.push({
               offset: argumentsOffset + localOffset,
@@ -248,10 +373,13 @@ function findClosestDeclaration(declarations, name, usageOffset) {
 
 module.exports = {
   findClosestDeclaration,
+  findBindings,
   findBoundedStringViolations,
   findBoundedVariableViolations,
+  findContracts,
   findFunctions,
   findImports,
+  findProviders,
   findStringCapacityAnnotation,
   findUnusedImports,
   findUnusedPrivateFunctions,
@@ -260,5 +388,10 @@ module.exports = {
   inferExpressionType,
   inferIntegerType,
   identifierPattern,
+  syntaxMask,
+  splitParameters,
+  topLevelDeclarations,
+  providerSource,
+  snakeCaseTypeName,
   sortedImportStatements,
 };

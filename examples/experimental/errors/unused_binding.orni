@@ -1,0 +1,14 @@
+// Intentional warning: this valid program demonstrates ORNI-W004 and its removal Quick Fix.
+// This file intentionally configures a contract that is never injected.
+
+contract Logger {
+    func log(message: string) -> unit;
+}
+
+provider ConsoleLogger for Logger {
+    func log(message: string) -> unit {
+        print message;
+    }
+}
+
+print "No dependency asks for Logger";

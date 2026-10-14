@@ -11,6 +11,8 @@ use crate::syntax::Value;
 pub(crate) struct Environment {
     scopes: Vec<HashMap<String, Value>>,
     function_boundaries: Vec<usize>,
+    bindings: usize,
+    string_bytes: usize,
 }
 
 impl Environment {
@@ -19,6 +21,8 @@ impl Environment {
         Self {
             scopes: vec![HashMap::new()],
             function_boundaries: Vec::new(),
+            bindings: 0,
+            string_bytes: 0,
         }
     }
 
@@ -43,7 +47,9 @@ impl Environment {
             self.scopes.len() > minimum_length,
             "a block scope must exist before it can be removed"
         );
-        self.scopes.pop();
+        if let Some(scope) = self.scopes.pop() {
+            self.release_scope(&scope);
+        }
     }
 
     /// Removes the current function scope and all values declared inside it.
@@ -52,15 +58,27 @@ impl Environment {
             .function_boundaries
             .pop()
             .expect("a function scope must exist before it can be removed");
-        self.scopes.truncate(boundary);
+        while self.scopes.len() > boundary {
+            if let Some(scope) = self.scopes.pop() {
+                self.release_scope(&scope);
+            }
+        }
     }
 
     /// Defines or replaces a variable in the innermost active scope.
     pub fn define(&mut self, name: String, value: Value) {
-        self.scopes
+        let added_bytes = string_bytes(&value);
+        let previous = self
+            .scopes
             .last_mut()
             .expect("an environment always has a scope")
             .insert(name, value);
+        self.string_bytes += added_bytes;
+        if let Some(previous) = previous {
+            self.string_bytes -= string_bytes(&previous);
+        } else {
+            self.bindings += 1;
+        }
     }
 
     /// Finds a binding in the innermost scope only.
@@ -70,19 +88,17 @@ impl Environment {
 
     /// Counts bindings that are currently retained by active scopes.
     pub fn binding_count(&self) -> usize {
-        self.scopes.iter().map(HashMap::len).sum()
+        self.bindings
     }
 
     /// Counts string bytes conservatively across all active bindings.
     pub fn retained_string_bytes(&self) -> usize {
-        self.scopes
-            .iter()
-            .flat_map(HashMap::values)
-            .map(|value| match value {
-                Value::String(value) => value.len(),
-                _ => 0,
-            })
-            .sum()
+        self.string_bytes
+    }
+
+    fn release_scope(&mut self, scope: &HashMap<String, Value>) {
+        self.bindings -= scope.len();
+        self.string_bytes -= scope.values().map(string_bytes).sum::<usize>();
     }
 
     /// Finds a variable in the active function scope or the global scope.
@@ -98,5 +114,12 @@ impl Environment {
         } else {
             visible.or_else(|| self.scopes[0].get(name))
         }
+    }
+}
+
+fn string_bytes(value: &Value) -> usize {
+    match value {
+        Value::String(value) => value.len(),
+        _ => 0,
     }
 }

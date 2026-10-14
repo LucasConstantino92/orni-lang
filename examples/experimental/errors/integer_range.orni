@@ -1,0 +1,3 @@
+// Intentional compile-time error: 256 cannot fit inside uint8.
+// Expected: The analyzer rejects a literal outside the declared integer range.
+let retries: uint8 = 256;

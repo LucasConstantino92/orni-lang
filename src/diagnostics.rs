@@ -90,6 +90,20 @@ impl OrniDiagnostic {
         )
     }
 
+    pub(crate) fn semantic_warning(
+        token: &Token,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::from_token(
+            token,
+            code,
+            DiagnosticSeverity::Warning,
+            "Semantic warning",
+            message,
+        )
+    }
+
     fn from_token(
         token: &Token,
         code: &'static str,
@@ -132,6 +146,16 @@ pub struct OrniError {
 }
 
 impl OrniError {
+    /// Attaches a specific stable diagnostic identity at the error's creation site.
+    ///
+    /// Help consumers must select guidance by this code, not by English wording.
+    pub(crate) fn with_code(mut self, code: &'static str) -> Self {
+        for diagnostic in &mut self.diagnostics {
+            diagnostic.code = code;
+        }
+        self
+    }
+
     /// Returns every error collected during the failed operation.
     pub fn diagnostics(&self) -> &[OrniDiagnostic] {
         &self.diagnostics

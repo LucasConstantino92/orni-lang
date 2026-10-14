@@ -1,0 +1,37 @@
+// Intentional compile-time error: create and bind a Clock provider to complete the dependency chain.
+// This file intentionally omits the Clock binding.
+
+contract Clock {
+    func now() -> int;
+}
+
+contract Logger {
+    func log(message: string) -> unit;
+}
+
+contract Audit {
+    func record(message: string) -> unit;
+}
+
+provider TimestampLogger(clock: Clock) for Logger {
+    func log(message: string) -> unit {
+        print message;
+    }
+}
+
+provider ConsoleAudit(logger: Logger) for Audit {
+    func record(message: string) -> unit {
+        logger.log(message);
+    }
+}
+
+bind Logger to TimestampLogger;
+
+/// Provides the default Clock implementation.
+provider ClockProvider for Clock {
+    func now() -> int {
+        return 0;
+    }
+}
+
+bind Clock to ClockProvider;

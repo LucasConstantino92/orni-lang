@@ -1,2 +1,3 @@
+// Intentional compile-time error: this undefined name is used to demonstrate Problems diagnostics.
 // Expected: Semantic error reporting an undefined variable.
 print missing_value;

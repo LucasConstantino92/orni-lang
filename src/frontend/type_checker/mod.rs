@@ -4,7 +4,7 @@ mod statements;
 use std::collections::HashMap;
 
 use crate::{
-    diagnostics::OrniError,
+    diagnostics::{OrniDiagnostic, OrniError},
     syntax::{IntegerType, Statement, Token, TokenKind, TypeName},
 };
 
@@ -13,7 +13,7 @@ use crate::{
 struct FunctionSignature {
     parameters: Vec<crate::syntax::Parameter>,
     return_type: TypeName,
-    body: Vec<Statement>,
+    body: std::rc::Rc<[Statement]>,
 }
 
 /// Validates types and names before the interpreter executes a program.
@@ -23,6 +23,11 @@ pub(crate) struct TypeChecker {
     current_return_type: Option<TypeName>,
     inferred_return_type: Option<TypeName>,
     inference_stack: Vec<String>,
+    contracts: HashMap<String, HashMap<String, FunctionSignature>>,
+    providers: HashMap<String, String>,
+    bindings: HashMap<String, String>,
+    allow_unbound: bool,
+    operations: usize,
 }
 
 impl TypeChecker {
@@ -34,19 +39,39 @@ impl TypeChecker {
             current_return_type: None,
             inferred_return_type: None,
             inference_stack: Vec::new(),
+            contracts: HashMap::new(),
+            providers: HashMap::new(),
+            bindings: HashMap::new(),
+            allow_unbound: false,
+            operations: 0,
         }
     }
 
+    /// Checks declarations independently of an application's provider bindings.
+    pub fn library(mut self) -> Self {
+        self.allow_unbound = true;
+        self
+    }
+
     /// Checks a complete program and collects independent semantic errors.
-    pub fn check(mut self, program: &[Statement]) -> Result<(), OrniError> {
-        let mut errors = self.declare_functions(program);
+    pub fn check(self, program: &[Statement]) -> Result<(), OrniError> {
+        self.check_with_diagnostics(program).map(|_| ())
+    }
+
+    /// Checks a complete program and returns non-fatal semantic diagnostics.
+    pub fn check_with_diagnostics(
+        mut self,
+        program: &[Statement],
+    ) -> Result<Vec<OrniDiagnostic>, OrniError> {
+        let mut errors = self.declare_framework(program);
+        errors.extend(self.declare_functions(program));
         for statement in program {
             if let Err(error) = self.check_statement(statement) {
                 errors.push(error);
             }
         }
         if errors.is_empty() {
-            Ok(())
+            Ok(self.framework_warnings(program))
         } else {
             Err(OrniError::combine(errors))
         }
@@ -66,8 +91,36 @@ impl TypeChecker {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).copied())
-            .ok_or_else(|| semantic_error(token, &format!("undefined variable '{name}'")))
+            .find_map(|scope| scope.get(name).cloned())
+            .ok_or_else(|| {
+                semantic_error(token, &format!("undefined variable '{name}'"))
+                    .with_code("ORNI-E103")
+            })
+    }
+
+    /// Reports a useful mismatch when an actual type differs from the expected type.
+    fn require_literal_range(
+        &self,
+        token: &Token,
+        expected: &TypeName,
+        expression: &crate::syntax::Expression,
+    ) -> Result<(), OrniError> {
+        use crate::syntax::{Expression, Value};
+        let expression = match expression {
+            Expression::Grouping(inner) => inner.as_ref(),
+            other => other,
+        };
+        if let (TypeName::Integer(integer_type), Expression::Literal(Value::Integer { value, .. })) =
+            (expected, expression)
+            && !integer_type.contains(*value)
+        {
+            return Err(semantic_error(
+                token,
+                &format!("value {value} is out of range for {integer_type}"),
+            )
+            .with_code("ORNI-E104"));
+        }
+        Ok(())
     }
 
     /// Reports a useful mismatch when an actual type differs from the expected type.
@@ -79,18 +132,28 @@ impl TypeChecker {
         context: &str,
     ) -> Result<(), OrniError> {
         if expected == actual
-            || (expected == TypeName::Double && matches!(actual, TypeName::Integer(_)))
+            || (expected == TypeName::Double && matches!(&actual, TypeName::Integer(_)))
             || matches!(
-                (expected, actual),
+                (&expected, &actual),
                 (TypeName::Integer(_), TypeName::Integer(_))
             )
-            || string_type_accepts(expected, actual)
+            || string_type_accepts(&expected, &actual)
         {
             Ok(())
         } else {
             Err(semantic_error(
                 token,
                 &format!("{context} expects {expected}, but found {actual}"),
+            )
+            .with_code(
+                if matches!(
+                    (&expected, &actual),
+                    (TypeName::String(_), TypeName::String(_))
+                ) {
+                    "ORNI-E106"
+                } else {
+                    "ORNI-E107"
+                },
             ))
         }
     }
@@ -102,24 +165,25 @@ impl TypeChecker {
         actual: TypeName,
         context: &str,
     ) -> Result<(), OrniError> {
-        if is_numeric(actual) {
+        if is_numeric(&actual) {
             Ok(())
         } else {
             Err(semantic_error(
                 token,
                 &format!("{context} expects int or double, but found {actual}"),
-            ))
+            )
+            .with_code("ORNI-E107"))
         }
     }
 }
 
 /// Reports whether a type supports numeric operators.
-fn is_numeric(type_name: TypeName) -> bool {
+fn is_numeric(type_name: &TypeName) -> bool {
     matches!(type_name, TypeName::Integer(_) | TypeName::Double)
 }
 
 /// Reports whether an actual string capacity satisfies a declared capacity.
-fn string_type_accepts(expected: TypeName, actual: TypeName) -> bool {
+fn string_type_accepts(expected: &TypeName, actual: &TypeName) -> bool {
     match (expected, actual) {
         (TypeName::String(None), TypeName::String(_)) => true,
         (TypeName::String(Some(maximum)), TypeName::String(Some(actual))) => actual <= maximum,

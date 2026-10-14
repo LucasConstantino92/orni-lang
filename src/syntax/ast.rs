@@ -68,7 +68,7 @@ impl std::fmt::Display for IntegerType {
 }
 
 /// A built-in type understood by Orni's semantic analyzer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypeName {
     /// An integer with an explicit storage range.
     Integer(IntegerType),
@@ -82,6 +82,8 @@ pub(crate) enum TypeName {
     Char,
     /// The absence of a meaningful value.
     Unit,
+    /// A user-defined dependency contract.
+    Contract(String),
 }
 
 impl std::fmt::Display for TypeName {
@@ -94,8 +96,20 @@ impl std::fmt::Display for TypeName {
             Self::Bool => write!(formatter, "bool"),
             Self::Char => write!(formatter, "char"),
             Self::Unit => write!(formatter, "unit"),
+            Self::Contract(name) => write!(formatter, "{name}"),
         }
     }
+}
+
+/// A function requirement declared by a dependency contract.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ContractMethod {
+    /// The required method name.
+    pub name: Token,
+    /// The ordered method parameters.
+    pub parameters: Vec<Parameter>,
+    /// The value produced by the method.
+    pub return_type: TypeName,
 }
 
 /// A named function parameter with an explicit type and optional default.
@@ -124,6 +138,33 @@ pub(crate) enum Statement {
         alias: Option<Token>,
         /// Optional public members imported directly into the local scope.
         members: Option<Vec<Token>>,
+    },
+    /// Declares the callable surface required from a provider.
+    Contract {
+        /// The contract name.
+        name: Token,
+        /// Required method signatures.
+        methods: Vec<ContractMethod>,
+    },
+    /// Implements one dependency contract.
+    Provider {
+        /// The provider name.
+        name: Token,
+        /// Contracts injected into every provider method.
+        dependencies: Vec<Parameter>,
+        /// The implemented contract name.
+        contract: Token,
+        /// Provider method implementations.
+        methods: Vec<Statement>,
+    },
+    /// Selects the provider injected for a contract.
+    Bind {
+        /// The `bind` keyword used for diagnostics.
+        keyword: Token,
+        /// The contract being configured.
+        contract: Token,
+        /// The provider selected for the contract.
+        provider: Token,
     },
     /// Declares a variable in the active scope.
     Let {
@@ -232,6 +273,13 @@ pub(crate) enum Value {
     Char(char),
     /// The absence of a meaningful value, currently returned by functions.
     Unit,
+    /// A stateless provider selected for a dependency contract.
+    Provider {
+        /// Contract used by the receiving parameter.
+        contract: String,
+        /// Concrete provider selected by `bind`.
+        provider: String,
+    },
 }
 
 impl std::fmt::Display for Value {
@@ -243,6 +291,7 @@ impl std::fmt::Display for Value {
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::Char(value) => write!(formatter, "{value}"),
             Self::Unit => write!(formatter, "unit"),
+            Self::Provider { provider, .. } => write!(formatter, "{provider}"),
         }
     }
 }
@@ -257,6 +306,7 @@ impl Value {
             Self::Bool(_) => TypeName::Bool,
             Self::Char(_) => TypeName::Char,
             Self::Unit => TypeName::Unit,
+            Self::Provider { contract, .. } => TypeName::Contract(contract.clone()),
         }
     }
 }

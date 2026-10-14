@@ -1,3 +1,4 @@
+// Intentional runtime error: run this file to test checked integer overflow. Static analysis may pass.
 // Expected: Runtime error because both values are inferred as int8.
 let maximum = 127;
 let one = 1;
