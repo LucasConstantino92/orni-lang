@@ -22,6 +22,12 @@ test("CLI propagates success, semantic errors, runtime errors, and usage failure
   assert.equal(run(["unknown-command"]).status, 2);
 });
 
+test("the WASI runner explains that HTTP serving requires the native target", () => {
+  const result = run(["serve", "examples/experimental/http_server"]);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /requires the native Rust target/);
+});
+
 test("nested project modules validate independently and execute through their manifest", () => {
   const result = run(["check-module", "examples/experimental/framework_project/providers/console_audit.orni"]);
   assert.equal(result.status, 0, result.stderr);

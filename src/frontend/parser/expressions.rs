@@ -151,7 +151,12 @@ impl Parser {
             self.check_chain(&mut chain_length)?;
             if self.matches(|kind| matches!(kind, TokenKind::Dot)) {
                 let member = self.consume(
-                    |kind| matches!(kind, TokenKind::Identifier(_)),
+                    |kind| {
+                        matches!(
+                            kind,
+                            TokenKind::Identifier(_) | TokenKind::Patch | TokenKind::Delete
+                        )
+                    },
                     "expected a member name after '.'",
                 )?;
                 let Expression::Variable(mut namespace) = expression else {
@@ -164,8 +169,11 @@ impl Parser {
                 let TokenKind::Identifier(namespace_name) = &mut namespace.kind else {
                     unreachable!("variable expressions contain identifiers")
                 };
-                let TokenKind::Identifier(member_name) = member.kind else {
-                    unreachable!("the member token was validated")
+                let member_name = match member.kind {
+                    TokenKind::Identifier(member_name) => member_name,
+                    TokenKind::Patch => "patch".to_owned(),
+                    TokenKind::Delete => "delete".to_owned(),
+                    _ => unreachable!("the member token was validated"),
                 };
                 namespace_name.push('.');
                 namespace_name.push_str(&member_name);

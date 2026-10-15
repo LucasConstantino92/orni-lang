@@ -16,6 +16,14 @@ const builtins = {
       "The statement itself does not produce a reusable value.",
     ],
   },
+  assert: {
+    signature: "assert condition;",
+    summary: "Stops a test or program with an error when the boolean condition is false.",
+    details: [
+      "Use `assert` in a file under `tests` and run it with `orni test`.",
+      "The condition must evaluate to `bool`.",
+    ],
+  },
 };
 
 const backendSymbols = {
@@ -23,11 +31,80 @@ const backendSymbols = {
     path: ["src", "runtime", "interpreter.rs"],
     needle: "Statement::Print {",
   },
+  assert: {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: "Statement::Assert {",
+  },
+  app: {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: 'if name == "app.name" {',
+  },
   func: {
     path: ["src", "runtime", "interpreter.rs"],
     needle: "Statement::Function {",
   },
+  main: {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: "fn call_application_main(&mut self)",
+  },
+  model: {
+    path: ["src", "frontend", "parser", "statements.rs"],
+    needle: "fn model_statement(",
+  },
+  store: {
+    path: ["src", "frontend", "parser", "statements.rs"],
+    needle: "fn store_statement(",
+  },
+  route: {
+    path: ["src", "frontend", "parser", "statements.rs"],
+    needle: "fn route_statement(",
+  },
+  response: {
+    path: ["src", "syntax", "ast.rs"],
+    needle: "Response {",
+  },
+  "store.create": {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: '"create" => {',
+  },
+  "store.list": {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: '"list" => Value::Response',
+  },
+  "store.find": {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: '"find" => match',
+  },
+  "store.replace": {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: '"replace" => {',
+  },
+  "store.patch": {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: '"patch" => {',
+  },
+  "store.delete": {
+    path: ["src", "runtime", "interpreter.rs"],
+    needle: '"delete" => match',
+  },
 };
+
+for (const method of ["get", "post", "put", "patch", "delete"]) {
+  backendSymbols[method] = {
+    path: ["src", "runtime", "http.rs"],
+    needle: `TokenKind::${method[0].toUpperCase()}${method.slice(1)} => "${method.toUpperCase()}",`,
+  };
+}
+
+for (const typeName of [
+  "string", "int", "int8", "int16", "int32", "int64",
+  "uint8", "uint16", "uint32", "uint64", "double", "bool", "char", "uuid", "unit",
+]) {
+  backendSymbols[typeName] = {
+    path: ["src", "syntax", "ast.rs"],
+    needle: "pub(crate) enum TypeName {",
+  };
+}
 
 const keywordDocumentation = {
   let: "Declares a variable in the current lexical scope.",
@@ -40,10 +117,20 @@ const keywordDocumentation = {
   import: "Loads public functions and values through a module namespace.",
   as: "Assigns a local namespace alias to an imported module.",
   contract: "Declares the callable behavior required from an injected dependency.",
+  model: "Declares the typed fields required by application data.",
+  store: "Declares an in-memory collection of one model for the local HTTP server.",
   provider: "Implements every method required by a dependency contract.",
   for: "Connects a provider declaration to the contract it implements.",
   bind: "Selects the provider that Orni injects for a contract.",
   to: "Connects a contract binding to its selected provider.",
+  route: "Maps an HTTP method and path to a top-level handler function.",
+  get: "Declares an HTTP GET route.",
+  post: "Declares an HTTP POST route with a validated model request body.",
+  put: "Declares an HTTP PUT route with a validated model request body.",
+  patch: "Declares an HTTP PATCH route with a partial validated model request body.",
+  delete: "Declares an HTTP DELETE route.",
+  assert: "Stops execution when a boolean condition is false; use it for Orni tests.",
+  app: "Configures the application startup from main with app.name(...) and app.port(...).",
 };
 
 const primitiveTypes = {
@@ -52,6 +139,8 @@ const primitiveTypes = {
   double: ["A 64-bit floating-point number.", "let ratio: double = 0.75;"],
   bool: ["A logical value that is either true or false.", "let enabled: bool = true;"],
   char: ["One Unicode scalar value.", "let initial: char = 'O';"],
+  uuid: ["A validated 128-bit universally unique identifier.", 'let user_id: uuid = "550e8400-e29b-41d4-a716-446655440000";'],
+  response: ["An explicit HTTP result created with response helpers.", "func create(input: User) -> response { return response.created(input); }"],
   unit: ["The absence of a reusable value.", "func log() -> unit { print \"done\"; }"],
 };
 
@@ -67,8 +156,16 @@ async function backendDefinitionFor(name) {
   const target = backendSymbols[name];
   if (!target) return undefined;
 
-  for (const folder of vscode.workspace.workspaceFolders || []) {
-    const uri = vscode.Uri.joinPath(folder.uri, ...target.path);
+  const configuredRoot = vscode.workspace.getConfiguration("orni").get("sourcePath");
+  const roots = [
+    ...(typeof configuredRoot === "string" && configuredRoot ? [vscode.Uri.file(configuredRoot)] : []),
+    ...(vscode.workspace.workspaceFolders || []).map((folder) => folder.uri),
+  ];
+  const visited = new Set();
+  for (const root of roots) {
+    const uri = vscode.Uri.joinPath(root, ...target.path);
+    if (visited.has(uri.fsPath)) continue;
+    visited.add(uri.fsPath);
     try {
       const document = await vscode.workspace.openTextDocument(uri);
       const offset = document.getText().indexOf(target.needle);

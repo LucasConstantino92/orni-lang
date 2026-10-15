@@ -63,18 +63,36 @@ pub(crate) enum TokenKind {
     Import,
     /// The `contract` keyword.
     Contract,
+    /// The `model` keyword for typed data schemas.
+    Model,
+    /// The `store` keyword for a persistent in-memory model collection.
+    Store,
     /// The `provider` keyword.
     Provider,
     /// The `for` keyword connecting a provider to a contract.
     For,
     /// The `bind` keyword.
     Bind,
+    /// The `route` keyword for an HTTP route declaration.
+    Route,
+    /// The `get` HTTP method keyword.
+    Get,
+    /// The `post` HTTP method keyword.
+    Post,
+    /// The `put` HTTP method keyword.
+    Put,
+    /// The `patch` HTTP method keyword.
+    Patch,
+    /// The `delete` HTTP method keyword.
+    Delete,
     /// The `to` keyword connecting a binding to its provider.
     To,
     /// The `as` keyword used by import aliases.
     As,
     /// The `print` keyword.
     Print,
+    /// The `assert` keyword used by test files.
+    Assert,
     /// The `return` keyword.
     Return,
     /// The `if` keyword.
@@ -97,6 +115,8 @@ pub(crate) enum TokenKind {
     Char(char),
     /// The assignment symbol, `=`.
     Equal,
+    /// The route declaration arrow, `=>`.
+    FatArrow,
     /// The equality comparison symbol, `==`.
     EqualEqual,
     /// The logical negation symbol, `!`.

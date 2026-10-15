@@ -121,6 +121,127 @@ impl TypeChecker {
             );
         };
         let name = identifier_name(name_token);
+        if matches!(name, "app.name" | "app.port") {
+            if arguments.len() != 1 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            let actual = self.expression_type(&arguments[0])?;
+            if name == "app.name" {
+                if !matches!(actual, TypeName::String(_)) {
+                    return Err(semantic_error(name_token, "app.name requires a string")
+                        .with_code("ORNI-E107"));
+                }
+            } else if !matches!(actual, TypeName::Integer(_)) {
+                return Err(semantic_error(name_token, "app.port requires an integer")
+                    .with_code("ORNI-E107"));
+            }
+            return Ok(TypeName::Unit);
+        }
+        if matches!(
+            name,
+            "response.ok" | "response.created" | "response.not_found" | "response.bad_request"
+        ) {
+            if arguments.len() != 1 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            let body_type = self.expression_type(&arguments[0])?;
+            if !matches!(body_type, TypeName::Model(_) | TypeName::String(_)) {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "response functions accept a model or string body",
+                )
+                .with_code("ORNI-E107"));
+            }
+            return Ok(TypeName::Response);
+        }
+        if name == "response.no_content" {
+            if !arguments.is_empty() {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "function 'response.no_content' expects 0 argument(s)",
+                )
+                .with_code("ORNI-E108"));
+            }
+            return Ok(TypeName::Response);
+        }
+        if let Some((store, operation)) = name.split_once('.')
+            && let Some(model) = self.stores.get(store).cloned()
+        {
+            let expected = match operation {
+                "create" => vec![TypeName::Model(model.clone())],
+                "find" | "delete" => vec![TypeName::Uuid],
+                "list" => vec![],
+                "replace" | "patch" => vec![TypeName::Uuid, TypeName::Model(model.clone())],
+                _ => {
+                    return Err(semantic_error(
+                        name_token,
+                        "stores support create, list, find, replace, patch, and delete",
+                    )
+                    .with_code("ORNI-E119"));
+                }
+            };
+            if arguments.len() != expected.len() {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "store operation '{name}' expects {} argument(s), but received {}",
+                        expected.len(),
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            for (index, (argument, expected)) in arguments.iter().zip(expected).enumerate() {
+                let actual = self.expression_type(argument)?;
+                if operation == "create" || (matches!(operation, "replace" | "patch") && index == 1)
+                {
+                    let TypeName::Model(input_model) = actual else {
+                        unreachable!("model declarations are checked before store calls")
+                    };
+                    let stored_fields = self
+                        .models
+                        .get(&model)
+                        .expect("stores reference known models");
+                    let input_fields = self
+                        .models
+                        .get(&input_model)
+                        .expect("model parameters reference known models");
+                    let compatible = stored_fields
+                        .iter()
+                        .filter(|field| identifier_name(&field.name) != "id")
+                        .all(|field| {
+                            input_fields.iter().any(|input| {
+                                identifier_name(&input.name) == identifier_name(&field.name)
+                                    && input.type_name == field.type_name
+                            })
+                        })
+                        && input_fields.len() + 1 == stored_fields.len();
+                    if !compatible {
+                        return Err(semantic_error(
+                            closing_parenthesis,
+                            &format!("store '{store}' create input must match model '{model}' except for id: uuid"),
+                        ).with_code("ORNI-E107"));
+                    }
+                    continue;
+                }
+                self.require_type(closing_parenthesis, expected, actual, "store argument")?;
+            }
+            return Ok(TypeName::Response);
+        }
         let signature = if let Some(signature) = self.functions.get(name).cloned() {
             signature
         } else if let Some((receiver, method)) = name.split_once('.') {

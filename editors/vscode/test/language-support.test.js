@@ -6,6 +6,7 @@ const {
   findBoundedStringViolations,
   findBoundedVariableViolations,
   findContracts,
+  findFunctionParameters,
   findFunctions,
   findImports,
   findStringCapacityAnnotation,
@@ -13,6 +14,8 @@ const {
   findUnusedPrivateFunctions,
   findVariables,
   findProviders,
+  findModels,
+  findStores,
   importInsertionOffset,
   providerSource,
   inferIntegerType,
@@ -102,6 +105,29 @@ test("finds functions and aliased dotted module imports", () => {
   assert.equal(moduleImport.namespace, "welcome");
   assert.equal(source.slice(moduleImport.offset, moduleImport.offset + moduleImport.length), "services.greeting");
   assert.equal(definition.name, "greet");
+});
+
+test("finds model, store, and function parameter declarations", () => {
+  const source = `
+model User {
+  id: uuid;
+}
+store users: User;
+func create_user(input: User) -> response {
+  return users.create(input);
+}
+`;
+
+  const [model] = findModels(source);
+  const [store] = findStores(source);
+  const [parameter] = findFunctionParameters(source);
+
+  assert.equal(model.name, "User");
+  assert.equal(source.slice(model.offset, model.offset + model.name.length), "User");
+  assert.deepEqual({ name: store.name, model: store.model }, { name: "users", model: "User" });
+  assert.equal(parameter.name, "input");
+  assert.equal(parameter.typeName, "User");
+  assert(source.indexOf("input);") <= parameter.scopeEnd);
 });
 
 test("finds selectively imported module members", () => {

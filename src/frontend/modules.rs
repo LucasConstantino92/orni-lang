@@ -242,7 +242,7 @@ impl ModuleLoader {
             })?
         };
         let tokens = Lexer::new(&source)
-            .with_source_name(path.display().to_string())
+            .with_source_name(path.to_string_lossy().replace('\\', "/"))
             .scan_tokens()
             .map_err(|error| error.with_source(&path))?;
         self.tokens += tokens.len();
@@ -479,6 +479,12 @@ fn transform_statement(
 ) -> Result<(), OrniError> {
     match statement {
         Statement::Import { .. } => unreachable!("imports are removed before transformation"),
+        Statement::Model { name, .. } => {
+            if module_level && let Some(namespace) = context.namespace {
+                qualify_token(name, namespace);
+            }
+        }
+        Statement::Store { .. } => {}
         Statement::Contract { name, methods } => {
             for method in methods {
                 for parameter in &mut method.parameters {
@@ -521,6 +527,9 @@ fn transform_statement(
             transform_reference_token(contract, context, context.module_contracts);
             transform_reference_token(provider, context, context.module_providers);
         }
+        Statement::Route { handler, .. } => {
+            transform_reference_token(handler, context, context.module_functions);
+        }
         Statement::Let { name, value, .. } => {
             transform_expression(value, context, locals)?;
             if module_level && let Some(namespace) = context.namespace {
@@ -555,7 +564,9 @@ fn transform_statement(
                 qualify_token(name, namespace);
             }
         }
-        Statement::Print { expression, .. } | Statement::Expression(expression) => {
+        Statement::Print { expression, .. }
+        | Statement::Assert { expression, .. }
+        | Statement::Expression(expression) => {
             transform_expression(expression, context, locals)?;
         }
         Statement::Return { value, .. } => {
@@ -761,12 +772,16 @@ fn statement_token(statement: &Statement) -> Option<&Token> {
         Statement::Let { name, .. }
         | Statement::Function { name, .. }
         | Statement::Contract { name, .. }
+        | Statement::Model { name, .. }
+        | Statement::Store { name, .. }
         | Statement::Provider { name, .. } => Some(name),
         Statement::Import { keyword, .. }
         | Statement::Bind { keyword, .. }
+        | Statement::Route { keyword, .. }
         | Statement::Print { keyword, .. }
         | Statement::Return { keyword, .. }
-        | Statement::If { keyword, .. } => Some(keyword),
+        | Statement::If { keyword, .. }
+        | Statement::Assert { keyword, .. } => Some(keyword),
         Statement::Block(_) | Statement::Expression(_) => None,
     }
 }
@@ -823,6 +838,11 @@ fn collect_module_declarations(
 fn namespace_is_used(statements: &[Statement], namespace: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Import { .. } => false,
+        Statement::Model { .. } => false,
+        Statement::Store { .. } => false,
+        Statement::Route { handler, .. } => identifier_name(handler)
+            .strip_prefix(namespace)
+            .is_some_and(|suffix| suffix.starts_with('.')),
         Statement::Contract { methods, .. } => methods.iter().any(|method| {
             method
                 .parameters
@@ -867,9 +887,9 @@ fn namespace_is_used(statements: &[Statement], namespace: &str) -> bool {
                         .is_some_and(|value| expression_uses_namespace(value, namespace))
             }) || namespace_is_used(body, namespace)
         }
-        Statement::Print { expression, .. } | Statement::Expression(expression) => {
-            expression_uses_namespace(expression, namespace)
-        }
+        Statement::Print { expression, .. }
+        | Statement::Assert { expression, .. }
+        | Statement::Expression(expression) => expression_uses_namespace(expression, namespace),
         Statement::Return { value, .. } => value
             .as_ref()
             .is_some_and(|value| expression_uses_namespace(value, namespace)),
@@ -916,6 +936,9 @@ fn expression_uses_namespace(expression: &Expression, namespace: &str) -> bool {
 fn name_is_used(statements: &[Statement], name: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Import { .. } => false,
+        Statement::Model { .. } => false,
+        Statement::Store { .. } => false,
+        Statement::Route { handler, .. } => identifier_name(handler) == name,
         Statement::Contract { methods, .. } => methods.iter().any(|method| {
             method
                 .parameters
@@ -954,9 +977,9 @@ fn name_is_used(statements: &[Statement], name: &str) -> bool {
                         .is_some_and(|value| expression_uses_name(value, name))
             }) || name_is_used(body, name)
         }
-        Statement::Print { expression, .. } | Statement::Expression(expression) => {
-            expression_uses_name(expression, name)
-        }
+        Statement::Print { expression, .. }
+        | Statement::Assert { expression, .. }
+        | Statement::Expression(expression) => expression_uses_name(expression, name),
         Statement::Return { value, .. } => value
             .as_ref()
             .is_some_and(|value| expression_uses_name(value, name)),

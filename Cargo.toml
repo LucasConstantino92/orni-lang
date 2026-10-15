@@ -1,6 +1,6 @@
 [package]
 name = "orni"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "A memory-conscious framework and language for predictable server applications."
 license = "MIT"
@@ -9,3 +9,5 @@ readme = "README.md"
 
 [dependencies]
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
+uuid = { version = "1.0", default-features = false, features = ["std", "v4"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }

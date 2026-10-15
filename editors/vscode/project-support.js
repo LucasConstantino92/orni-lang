@@ -54,4 +54,11 @@ function resolveModule(filePath, segments, sourceRoot) {
   return fs.existsSync(local) || !fs.existsSync(rooted) ? local : rooted;
 }
 
-module.exports = { projectFor, resolveModule };
+/** Returns whether a file belongs to the project's executable test suite. */
+function isTestFile(filePath, project) {
+  if (!project) return false;
+  const relative = path.relative(project.root, filePath);
+  return relative !== "" && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative) && relative.split(path.sep)[0] === "tests";
+}
+
+module.exports = { projectFor, resolveModule, isTestFile };

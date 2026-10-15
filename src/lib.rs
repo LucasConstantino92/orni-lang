@@ -177,6 +177,18 @@ pub fn run_file_with_limits(
     Interpreter::new(limits).execute(&program)
 }
 
+/// Starts a native local HTTP server for the routes declared in an Orni file.
+///
+/// This development preview supports typed routes and in-memory CRUD stores.
+/// The server listens on `127.0.0.1:3000` unless `app.port(...)` changes it in `main`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn serve_file(path: impl AsRef<Path>) -> Result<(), OrniError> {
+    let limits = Project::discover(path.as_ref())?
+        .map_or_else(ExecutionLimits::default, |project| project.runtime);
+    let program = compile_file(path.as_ref())?;
+    runtime::serve(&program, limits)
+}
+
 /// Runs an Orni program with explicit resource boundaries.
 ///
 /// This is useful for servers that execute untrusted or user-provided source.
@@ -205,8 +217,8 @@ fn compile_file(path: &Path) -> Result<Vec<syntax::Statement>, OrniError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DiagnosticSeverity, ExecutionLimits, check, check_file, check_module, diagnose_file, run,
-        run_file, run_with_limits,
+        DiagnosticSeverity, ExecutionLimits, Interpreter, check, check_file, check_module, compile,
+        diagnose_file, run, run_file, run_with_limits,
     };
 
     #[test]
@@ -222,6 +234,220 @@ mod tests {
         .expect("the program should run");
 
         assert_eq!(output, "Orni was born!\n2\n");
+    }
+
+    #[test]
+    fn validates_typed_data_models() {
+        check(
+            r#"
+                model User {
+                    id: uuid;
+                    name: string<80>;
+                    active: bool;
+                }
+            "#,
+        )
+        .expect("models should accept built-in field types");
+
+        let error = check(
+            r#"
+                model User {
+                    name: string;
+                    name: string;
+                }
+            "#,
+        )
+        .expect_err("duplicate model fields should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("model field name is already declared")
+        );
+
+        let error = check(
+            r#"
+                model User {
+                    logger: Logger;
+                }
+            "#,
+        )
+        .expect_err("models cannot embed dependency contracts");
+        assert!(
+            error
+                .to_string()
+                .contains("model fields must use a built-in value type")
+        );
+    }
+
+    #[test]
+    fn validates_get_routes_and_handler_signatures() {
+        check(
+            r#"
+            func hello() -> string { return "Hello, Orni!"; }
+            route get "/hello" => hello;
+        "#,
+        )
+        .expect("a zero-argument string handler should be valid");
+
+        let error = check(
+            r#"
+            func hello() -> string { return "Hello, Orni!"; }
+            route get "hello" => hello;
+        "#,
+        )
+        .expect_err("route paths should be absolute");
+        assert!(
+            error
+                .to_string()
+                .contains("route paths must start with '/'")
+        );
+
+        let error = check(
+            r#"
+            func hello(name: string) -> string { return name; }
+            route get "/hello" => hello;
+        "#,
+        )
+        .expect_err("route handlers should match their path parameters");
+        assert!(
+            error
+                .to_string()
+                .contains("route declares 0 path parameter(s)")
+        );
+
+        check(
+            r#"
+            func hello(name: string) -> string { return "Hello, " + name + "!"; }
+            route get "/hello/:name" => hello;
+        "#,
+        )
+        .expect("a string path parameter should be supplied to its named handler parameter");
+
+        check(
+            r#"
+            func user(id: uint16) -> string { return "User #" + id; }
+            route get "/users/:id" => user;
+        "#,
+        )
+        .expect("integer path parameters should be accepted");
+
+        let error = check(
+            r#"
+            func user(session: Session) -> string { return "User"; }
+            route get "/users/:session" => user;
+        "#,
+        )
+        .expect_err("dependency contracts cannot be supplied by a URL segment");
+        assert!(error.to_string().contains(
+            "route path parameters must use string, integer, double, bool, char, or uuid types"
+        ));
+
+        let error = check(
+            r#"
+            func hello(id: string) -> string { return id; }
+            route get "/hello/:name" => hello;
+        "#,
+        )
+        .expect_err("handler parameter names should document their URL mapping");
+        assert!(
+            error
+                .to_string()
+                .contains("must match the route parameter ':name'")
+        );
+    }
+
+    #[test]
+    fn executes_a_route_handler_without_running_application_output() {
+        let program = compile(
+            r#"
+                let greeting = "Hello";
+                print "application startup output";
+                func hello() -> string { return greeting + ", Orni!"; }
+                route get "/hello" => hello;
+            "#,
+        )
+        .expect("the HTTP example should compile");
+
+        let response = Interpreter::new(ExecutionLimits::default())
+            .execute_handler(&program, "hello", Vec::new())
+            .expect("the route handler should return a body");
+
+        assert_eq!(response.to_string(), "Hello, Orni!");
+    }
+
+    #[test]
+    fn runs_main_after_top_level_statements() {
+        let output = run(r#"
+                let name = "Orni";
+                print "Preparing";
+                func main() -> unit { print "Hello, " + name + "!"; }
+            "#)
+        .expect("the application entry point should execute during a normal run");
+
+        assert_eq!(output, "Preparing\nHello, Orni!\n");
+    }
+
+    #[test]
+    fn requires_a_parameterless_unit_main_function() {
+        let parameter_error = check("func main(name: string) -> unit { print name; }")
+            .expect_err("main must not accept parameters");
+        assert!(
+            parameter_error
+                .to_string()
+                .contains("cannot declare parameters")
+        );
+
+        let return_error =
+            check("func main() -> string { return \"no\"; }").expect_err("main must return unit");
+        assert!(return_error.to_string().contains("must return unit"));
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn executes_main_once_before_starting_a_server() {
+        let program = compile(
+            r#"
+                let application = "Orni API";
+                func main() -> unit { print "Starting " + application; }
+                func health() -> string { return "OK"; }
+                route get "/health" => health;
+            "#,
+        )
+        .expect("the application entry point should compile");
+
+        let (output, _) = Interpreter::new(ExecutionLimits::default())
+            .execute_main(&program)
+            .expect("the application entry point should execute");
+
+        assert_eq!(output, "Starting Orni API\n");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn configures_the_development_server_from_main() {
+        let program = compile(
+            r#"
+                func main() -> unit {
+                    app.name("Orni API");
+                    app.port(3200);
+                }
+            "#,
+        )
+        .expect("the application configuration should compile");
+
+        let (_, application) = Interpreter::new(ExecutionLimits::default())
+            .execute_main(&program)
+            .expect("the application configuration should execute");
+
+        assert_eq!(application.name.as_deref(), Some("Orni API"));
+        assert_eq!(application.port, 3200);
+    }
+
+    #[test]
+    fn evaluates_assertions_for_orni_tests() {
+        run("assert 2 + 2 == 4;").expect("a true assertion should succeed");
+        let error = run("assert false;").expect_err("a false assertion should fail");
+        assert!(error.to_string().contains("assertion failed"));
     }
 
     #[test]
@@ -396,6 +622,20 @@ mod tests {
         .expect("the program should run");
 
         assert_eq!(output, "10\n1.5\ntrue\nO\n");
+    }
+
+    #[test]
+    fn validates_and_preserves_uuid_values() {
+        let output = run(r#"
+                let user_id: uuid = "550e8400-e29b-41d4-a716-446655440000";
+                print user_id;
+            "#)
+        .expect("a valid UUID string should initialize a uuid value");
+        assert_eq!(output, "550e8400-e29b-41d4-a716-446655440000\n");
+
+        let error = check(r#"let user_id: uuid = "not-a-uuid";"#)
+            .expect_err("invalid UUID literals should be diagnosed before execution");
+        assert!(error.to_string().contains("value is not a valid UUID"));
     }
 
     #[test]

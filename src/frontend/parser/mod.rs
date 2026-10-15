@@ -5,12 +5,14 @@ use crate::{
     diagnostics::OrniError,
     syntax::{Statement, Token, TokenKind},
 };
+use std::collections::HashSet;
 
 /// Builds an abstract syntax tree from a sequence of lexical tokens.
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     current: usize,
     nesting: usize,
+    model_names: HashSet<String>,
 }
 
 impl Parser {
@@ -43,10 +45,18 @@ impl Parser {
 
     /// Creates a parser positioned at the first token.
     pub fn new(tokens: Vec<Token>) -> Self {
+        let model_names = tokens
+            .windows(2)
+            .filter_map(|tokens| match (&tokens[0].kind, &tokens[1].kind) {
+                (TokenKind::Model, TokenKind::Identifier(name)) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
         Self {
             tokens,
             current: 0,
             nesting: 0,
+            model_names,
         }
     }
 

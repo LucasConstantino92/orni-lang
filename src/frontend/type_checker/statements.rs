@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     diagnostics::{OrniDiagnostic, OrniError},
-    syntax::{Parameter, Statement, Token, TypeName},
+    syntax::{Parameter, Statement, Token, TokenKind, TypeName},
 };
 
 use super::{FunctionSignature, TypeChecker, identifier_name, semantic_error, statements_return};
@@ -11,6 +11,83 @@ impl TypeChecker {
     /// Registers contracts, providers, bindings, and provider methods.
     pub(super) fn declare_framework(&mut self, statements: &[Statement]) -> Vec<OrniError> {
         let mut errors = Vec::new();
+        for statement in statements {
+            let Statement::Model { name, fields } = statement else {
+                continue;
+            };
+            let model_name = identifier_name(name);
+            if self
+                .models
+                .insert(model_name.to_owned(), fields.clone())
+                .is_some()
+            {
+                errors.push(
+                    semantic_error(name, &format!("model '{model_name}' is already declared"))
+                        .with_code("ORNI-E116"),
+                );
+                continue;
+            }
+            for field in fields {
+                if !matches!(
+                    field.type_name,
+                    TypeName::String(_)
+                        | TypeName::Integer(_)
+                        | TypeName::Double
+                        | TypeName::Bool
+                        | TypeName::Char
+                        | TypeName::Uuid
+                ) {
+                    errors.push(
+                        semantic_error(
+                            &field.name,
+                            "model fields must use a built-in value type in this preview",
+                        )
+                        .with_code("ORNI-E107"),
+                    );
+                }
+            }
+        }
+        for statement in statements {
+            let Statement::Store {
+                keyword,
+                name,
+                model,
+            } = statement
+            else {
+                continue;
+            };
+            let store_name = identifier_name(name);
+            let model_name = identifier_name(model);
+            let Some(fields) = self.models.get(model_name) else {
+                errors.push(
+                    semantic_error(
+                        model,
+                        &format!("store '{store_name}' references unknown model '{model_name}'"),
+                    )
+                    .with_code("ORNI-E103"),
+                );
+                continue;
+            };
+            if !fields.iter().any(|field| {
+                identifier_name(&field.name) == "id" && matches!(field.type_name, TypeName::Uuid)
+            }) {
+                errors.push(
+                    semantic_error(keyword, "store models must declare an 'id: uuid' field")
+                        .with_code("ORNI-E107"),
+                );
+                continue;
+            }
+            if self
+                .stores
+                .insert(store_name.to_owned(), model_name.to_owned())
+                .is_some()
+            {
+                errors.push(
+                    semantic_error(name, &format!("store '{store_name}' is already declared"))
+                        .with_code("ORNI-E116"),
+                );
+            }
+        }
         for statement in statements {
             let Statement::Contract { name, methods } = statement else {
                 continue;
@@ -384,6 +461,23 @@ impl TypeChecker {
                     );
                     continue;
                 }
+                if function_name == "main" && !parameters.is_empty() {
+                    errors.push(
+                        semantic_error(
+                            name,
+                            "application entry function 'main' cannot declare parameters",
+                        )
+                        .with_code("ORNI-E108"),
+                    );
+                    continue;
+                }
+                if function_name == "main" && *return_type != TypeName::Unit {
+                    errors.push(
+                        semantic_error(name, "application entry function 'main' must return unit")
+                            .with_code("ORNI-E117"),
+                    );
+                    continue;
+                }
                 self.functions.insert(
                     function_name.to_owned(),
                     FunctionSignature {
@@ -406,7 +500,125 @@ impl TypeChecker {
                         .with_code("ORNI-E127"),
                 );
             }
-            Statement::Contract { .. } | Statement::Bind { .. } => {}
+            Statement::Contract { .. }
+            | Statement::Model { .. }
+            | Statement::Store { .. }
+            | Statement::Bind { .. } => {}
+            Statement::Route {
+                keyword,
+                method,
+                path,
+                handler,
+            } => {
+                let TokenKind::String(path_value) = &path.kind else {
+                    unreachable!("the parser only produces quoted route paths")
+                };
+                if !path_value.starts_with('/') {
+                    return Err(semantic_error(path, "route paths must start with '/'")
+                        .with_code("ORNI-E152"));
+                }
+                let parameters = route_parameters(path_value)
+                    .map_err(|message| semantic_error(path, &message).with_code("ORNI-E152"))?;
+                let pattern = format!("{:?}:{}", method.kind, route_pattern(path_value));
+                if !self.routes.insert(pattern) {
+                    return Err(semantic_error(
+                        path,
+                        &format!("route '{path_value}' conflicts with an existing route pattern"),
+                    )
+                    .with_code("ORNI-E152"));
+                }
+                let Some(function) = self.functions.get(identifier_name(handler)) else {
+                    return Err(semantic_error(
+                        handler,
+                        &format!("undefined route handler '{}'", identifier_name(handler)),
+                    )
+                    .with_code("ORNI-E103"));
+                };
+                let has_body = matches!(
+                    method.kind,
+                    TokenKind::Post | TokenKind::Put | TokenKind::Patch
+                );
+                if has_body
+                    && function
+                        .parameters
+                        .last()
+                        .is_none_or(|parameter| !matches!(parameter.type_name, TypeName::Model(_)))
+                {
+                    return Err(semantic_error(
+                        keyword,
+                        "POST and PUT route handlers must accept one model body as their final parameter",
+                    )
+                    .with_code("ORNI-E152"));
+                }
+                if has_body && !matches!(function.return_type, TypeName::Response) {
+                    return Err(semantic_error(
+                        keyword,
+                        "POST and PUT route handlers must return response",
+                    )
+                    .with_code("ORNI-E152"));
+                }
+                if !has_body
+                    && !matches!(
+                        function.return_type,
+                        TypeName::String(_) | TypeName::Response
+                    )
+                {
+                    return Err(semantic_error(
+                        keyword,
+                        "GET route handlers must return string or response",
+                    )
+                    .with_code("ORNI-E152"));
+                }
+                let path_parameters = if has_body {
+                    function.parameters.len().saturating_sub(1)
+                } else {
+                    function.parameters.len()
+                };
+                if path_parameters != parameters.len() {
+                    return Err(semantic_error(
+                        keyword,
+                        &format!(
+                            "route declares {} path parameter(s), but handler '{}' accepts {}",
+                            parameters.len(),
+                            identifier_name(handler),
+                            path_parameters,
+                        ),
+                    )
+                    .with_code("ORNI-E152"));
+                }
+                for (parameter, path_parameter) in function
+                    .parameters
+                    .iter()
+                    .take(path_parameters)
+                    .zip(parameters)
+                {
+                    if !matches!(
+                        parameter.type_name,
+                        TypeName::String(_)
+                            | TypeName::Integer(_)
+                            | TypeName::Double
+                            | TypeName::Bool
+                            | TypeName::Char
+                            | TypeName::Uuid
+                    ) {
+                        return Err(semantic_error(
+                            &parameter.name,
+                            "route path parameters must use string, integer, double, bool, char, or uuid types",
+                        )
+                        .with_code("ORNI-E152"));
+                    }
+                    if identifier_name(&parameter.name) != path_parameter {
+                        return Err(semantic_error(
+                            &parameter.name,
+                            &format!(
+                                "handler parameter '{}' must match the route parameter ':{path_parameter}'",
+                                identifier_name(&parameter.name),
+                            ),
+                        )
+                        .with_code("ORNI-E152"));
+                    }
+                }
+            }
             Statement::Provider {
                 dependencies,
                 methods,
@@ -474,6 +686,13 @@ impl TypeChecker {
             } => self.check_function(name, parameters, return_type.clone(), body)?,
             Statement::Print { expression, .. } | Statement::Expression(expression) => {
                 self.expression_type(expression)?;
+            }
+            Statement::Assert {
+                keyword,
+                expression,
+            } => {
+                let actual = self.expression_type(expression)?;
+                self.require_type(keyword, TypeName::Bool, actual, "assertion")?;
             }
             Statement::Return { keyword, value } => {
                 let Some(expected) = self.current_return_type.clone() else {
@@ -600,6 +819,49 @@ impl TypeChecker {
     }
 }
 
+/// Returns validated parameter names in a route path, in their URL order.
+fn route_parameters(path: &str) -> Result<Vec<&str>, String> {
+    let mut parameters = Vec::new();
+    for segment in path.split('/').skip(1) {
+        let Some(name) = segment.strip_prefix(':') else {
+            continue;
+        };
+        if name.is_empty() || !is_identifier(name) {
+            return Err(format!(
+                "route parameter ':{name}' must use a valid identifier name"
+            ));
+        }
+        if parameters.contains(&name) {
+            return Err(format!(
+                "route parameter ':{name}' is declared more than once"
+            ));
+        }
+        parameters.push(name);
+    }
+    Ok(parameters)
+}
+
+/// Replaces path parameter names so structurally identical routes conflict.
+fn route_pattern(path: &str) -> String {
+    path.split('/')
+        .map(|segment| {
+            if segment.starts_with(':') {
+                ":"
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Limits route parameter names to names that Orni functions can declare.
+fn is_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    matches!(characters.next(), Some(character) if character.is_ascii_alphabetic() || character == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 fn statements_request_contract(statements: &[Statement], contract: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Provider {
@@ -631,9 +893,13 @@ fn statements_request_contract(statements: &[Statement], contract: &str) -> bool
         }
         Statement::Block(statements) => statements_request_contract(statements, contract),
         Statement::Import { .. }
+        | Statement::Model { .. }
+        | Statement::Store { .. }
         | Statement::Bind { .. }
+        | Statement::Route { .. }
         | Statement::Let { .. }
         | Statement::Print { .. }
+        | Statement::Assert { .. }
         | Statement::Return { .. }
         | Statement::Expression(_) => false,
     })

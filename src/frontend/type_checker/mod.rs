@@ -1,7 +1,7 @@
 mod expressions;
 mod statements;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     diagnostics::{OrniDiagnostic, OrniError},
@@ -24,8 +24,11 @@ pub(crate) struct TypeChecker {
     inferred_return_type: Option<TypeName>,
     inference_stack: Vec<String>,
     contracts: HashMap<String, HashMap<String, FunctionSignature>>,
+    models: HashMap<String, Vec<crate::syntax::ModelField>>,
+    stores: HashMap<String, String>,
     providers: HashMap<String, String>,
     bindings: HashMap<String, String>,
+    routes: HashSet<String>,
     allow_unbound: bool,
     operations: usize,
 }
@@ -40,8 +43,11 @@ impl TypeChecker {
             inferred_return_type: None,
             inference_stack: Vec::new(),
             contracts: HashMap::new(),
+            models: HashMap::new(),
+            stores: HashMap::new(),
             providers: HashMap::new(),
             bindings: HashMap::new(),
+            routes: HashSet::new(),
             allow_unbound: false,
             operations: 0,
         }
@@ -120,6 +126,11 @@ impl TypeChecker {
             )
             .with_code("ORNI-E104"));
         }
+        if let (TypeName::Uuid, Expression::Literal(Value::String(value))) = (expected, expression)
+            && uuid::Uuid::parse_str(value).is_err()
+        {
+            return Err(semantic_error(token, "value is not a valid UUID").with_code("ORNI-E107"));
+        }
         Ok(())
     }
 
@@ -136,6 +147,7 @@ impl TypeChecker {
             || matches!(
                 (&expected, &actual),
                 (TypeName::Integer(_), TypeName::Integer(_))
+                    | (TypeName::Uuid, TypeName::String(_))
             )
             || string_type_accepts(&expected, &actual)
         {

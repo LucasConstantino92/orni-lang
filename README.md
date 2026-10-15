@@ -53,8 +53,9 @@ The current foundation focuses on:
 - structured diagnostics with stable codes, severity, source paths, and ranges;
 - first-class editor support for `.orni` files.
 
-Version 0.8.0 introduces project manifests, contracts, providers, and editor
-workflow improvements. Explore the guided examples in
+Version 0.9.0 adds the first local HTTP application workflow: project creation,
+startup configuration, typed routes, in-memory CRUD stores, UUID identifiers,
+and executable Orni tests. Explore the guided examples in
 [`examples/experimental`](examples/experimental).
 
 ## A first Orni program
@@ -102,7 +103,42 @@ Hello, Orni
 | `double` | 64-bit floating-point number |
 | `bool` | `true` or `false` |
 | `char` | One Unicode scalar value |
+| `uuid` | A validated 128-bit universally unique identifier |
+| `response` | An explicit HTTP result created by a route handler |
 | `unit` | Absence of a reusable value |
+
+### Typed models
+
+`model` declares a named data shape. It is the foundation for typed JSON bodies,
+responses, and storage in the HTTP preview:
+
+```orni
+model User {
+    id: uuid;
+    name: string<80>;
+    email: string<254>;
+}
+
+model CreateUser {
+    name: string<80>;
+    email: string<254>;
+}
+
+model UpdateUser {
+    name: string<80>;
+    email: string<254>;
+}
+
+model PatchUser {
+    name: string<80>;
+    email: string<254>;
+}
+```
+
+Models currently accept built-in value types only. A `POST` route can receive
+one model as its final handler parameter; Orni validates the JSON object before
+the handler runs. Nested models and persistence will be introduced with the
+CRUD API.
 
 ## Smart inference, explicit control
 
@@ -181,6 +217,56 @@ scopes enter or leave instead of rescanning every retained value on each `let`.
 
 ## Project manifests and dependency injection (preview)
 
+## Start a project
+
+Create an API workspace with a runnable user CRUD starter:
+
+```sh
+orni new my_api
+cd my_api
+orni dev
+```
+
+`orni new my_api --empty` creates only a `main.orni`, manifest, `/health`
+route, and one sample test in `tests/`. Both templates use an optional Dart-like
+entry point:
+
+```orni
+func main() -> unit {
+    app.name("Orni API");
+    app.port(3000);
+    print "Starting Orni API";
+}
+```
+
+When present, `main` is the application entry point. It must use the signature
+`func main() -> unit`; `orni run` executes it after top-level statements, while
+`orni dev` and `orni serve` execute it once before starting the local server.
+HTTP routes remain top-level declarations.
+
+`app.name(...)` controls the startup label and `app.port(...)` changes the local
+server port. Both are optional; the default address is `127.0.0.1:3000`.
+
+Run application checks with `assert` in any `.orni` file under `tests/`:
+
+```orni
+import services.health.{health};
+
+assert health() == "OK";
+```
+
+Then execute every test file with:
+
+```sh
+orni test
+```
+
+Tests import reusable modules from `src/`, not `src/main.orni`. The entry file
+can declare routes, stores, and startup configuration, so it intentionally
+cannot be imported as a reusable module. Move testable behavior into a module
+such as `src/services/health.orni`, import it from both `main.orni` and the
+test file, and keep `main.orni` as the application composition root.
+
 Place `orni.toml` at the application root:
 
 ```toml
@@ -199,9 +285,87 @@ exist and differ, Orni reports an ambiguity. The nearest manifest also lets a
 nested provider module be checked independently. Project paths must stay inside
 the project directory. Unknown settings and invalid limits are errors.
 
-`orni run` and `orni check` use the manifest entry when no file is provided.
+`orni run`, `orni serve`, `orni check`, and `orni test` use the manifest entry when no path is provided.
 The CLI applies runtime settings from the manifest; an embedding application's
 explicit `run_file_with_limits` settings take precedence.
+
+The experimental HTTP preview supports top-level GET, POST, PUT, PATCH, and DELETE routes. GET
+handlers may return a string or an explicit `response`; POST handlers receive
+one model body as their final parameter and return `response`. Route parameters
+use `:name` and are passed to matching handler parameters in URL order.
+The handler type controls safe conversion; use `int`,
+fixed-width integers such as `uint16`, `double`, `bool`, `char`, or `uuid` when a route
+needs a typed value. Invalid input returns `400 Bad Request` without calling the
+handler. `orni serve` starts a native Rust server on
+`127.0.0.1:3000`; it is not available through the WASI editor/compiler target.
+See [`examples/experimental/http_server`](examples/experimental/http_server).
+
+```orni
+func hello(name: string) -> string {
+    return "Hello, " + name + "!";
+}
+
+route get "/hello/:name" => hello;
+```
+
+`GET /hello/Orni` responds with `Hello, Orni!`. Literal routes take precedence
+over parameterized routes. Query strings are ignored in this preview.
+
+For a complete in-memory CRUD endpoint, declare a model with `id: uuid` and a
+`store`. Missing or extra fields, invalid field types, oversized strings, and
+invalid UUIDs return `400 Bad Request` before the function runs:
+
+```orni
+model User {
+    id: uuid;
+    name: string<80>;
+    email: string<254>;
+}
+
+store users: User;
+
+func create_user(input: CreateUser) -> response {
+    return users.create(input);
+}
+
+route post "/users" => create_user;
+
+func list_users() -> response { return users.list(); }
+route get "/users" => list_users;
+
+func get_user(id: uuid) -> response { return users.find(id); }
+func update_user(id: uuid, input: UpdateUser) -> response { return users.replace(id, input); }
+func patch_user(id: uuid, input: PatchUser) -> response { return users.patch(id, input); }
+func delete_user(id: uuid) -> response { return users.delete(id); }
+
+route get "/users/:id" => get_user;
+route put "/users/:id" => update_user;
+route patch "/users/:id" => patch_user;
+route delete "/users/:id" => delete_user;
+```
+
+`create` generates the UUID in the server, so `POST /users` receives only the
+client-owned `CreateUser` fields and returns the complete `User`. The collection lives only while `orni serve` is running: `create` returns
+`201`, `find` returns `200` or `404`, `replace` returns `200` or `404`, and
+`delete` returns `204` or `404`. A duplicate UUID returns `409 Conflict`.
+For `PATCH`, every declared field is optional in the JSON body; only supplied
+fields are changed, and an empty object is rejected.
+
+Store operations also include `list`, which returns every retained model as a
+JSON array. Route handlers can produce explicit business responses with
+`response.ok(body)`, `response.created(body)`, `response.bad_request(body)`,
+`response.not_found(body)`, or `response.no_content()`.
+
+```orni
+func user(id: uint16) -> string {
+    return "User #" + id;
+}
+
+route get "/users/:id" => user;
+```
+
+`GET /users/42` calls `user` with an actual `uint16`; `/users/70000` returns
+`400 Bad Request` because the value cannot fit in that type.
 
 ```orni
 contract Clock {
@@ -334,6 +498,7 @@ retain message-based help. See the [diagnostic code catalog](docs/diagnostic-cod
 - [Rust](https://www.rust-lang.org/tools/install)
 - Node.js, used by the WASI development runner
 - The Rust `wasm32-wasip1` target
+- A native C/C++ linker to run the experimental HTTP server (`link.exe` from the MSVC C++ build tools on Windows)
 
 Install the target once:
 
@@ -502,6 +667,7 @@ Orni source (.orni)
 - [x] Runtime memory, recursion, output, and execution-fuel boundaries
 - [x] Namespaced modules, aliases, underscore privacy, and cycle detection
 - [x] Developer CLI with `orni run`, `orni check`, and module validation
+- [x] Experimental native HTTP CRUD preview with typed JSON and in-memory stores
 - [x] Contracts, providers, and dependency injection syntax (unreleased preview)
 - [x] Project manifests and standalone editor compiler (unreleased preview)
 - [ ] Standard-library adapter model

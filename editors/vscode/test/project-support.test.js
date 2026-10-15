@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const test = require("node:test");
-const { projectFor, resolveModule } = require("../project-support");
+const { isTestFile, projectFor, resolveModule } = require("../project-support");
 
 test("manifest-free nested imports can use the owning entry's source root", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "orni-entry-root-"));
@@ -30,5 +30,17 @@ test("nested modules use the manifest source directory and detect ambiguous impo
     assert.throws(() => resolveModule(module, ["contracts", "clock"]), /ambiguous/);
     fs.writeFileSync(path.join(directory, "orni.toml"), '[project]\nsource = "../escape"\n');
     assert.throws(() => projectFor(module), /inside/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("recognizes executable test files without treating reusable modules as tests", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "orni-tests-"));
+  try {
+    fs.mkdirSync(path.join(directory, "src"));
+    fs.mkdirSync(path.join(directory, "tests"));
+    fs.writeFileSync(path.join(directory, "orni.toml"), '[project]\nname = "example"\nsource = "src"\nentry = "src/main.orni"\n');
+    const project = projectFor(path.join(directory, "tests/health.orni"));
+    assert.equal(isTestFile(path.join(directory, "tests/health.orni"), project), true);
+    assert.equal(isTestFile(path.join(directory, "src/services/health.orni"), project), false);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

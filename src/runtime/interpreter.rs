@@ -6,6 +6,8 @@ use crate::{
 };
 
 use super::ExecutionLimits;
+#[cfg(not(target_arch = "wasm32"))]
+use super::MemoryStores;
 use super::environment::Environment;
 
 #[derive(Clone)]
@@ -24,6 +26,26 @@ enum ExecutionFlow {
     Return { keyword: Token, value: Value },
 }
 
+/// Startup settings declared by the application entry point.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ApplicationConfig {
+    /// Human-readable application name displayed when the server starts.
+    pub name: Option<String>,
+    /// Local TCP port used by the development server.
+    pub port: u16,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for ApplicationConfig {
+    fn default() -> Self {
+        Self {
+            name: None,
+            port: 3000,
+        }
+    }
+}
+
 /// Evaluates an Orni abstract syntax tree and captures printed output.
 pub(crate) struct Interpreter {
     environment: Environment,
@@ -33,6 +55,10 @@ pub(crate) struct Interpreter {
     limits: ExecutionLimits,
     call_depth: usize,
     operations: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    stores: Option<MemoryStores>,
+    #[cfg(not(target_arch = "wasm32"))]
+    application: ApplicationConfig,
 }
 
 impl Interpreter {
@@ -46,11 +72,72 @@ impl Interpreter {
             limits,
             call_depth: 0,
             operations: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            stores: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            application: ApplicationConfig::default(),
         }
+    }
+
+    /// Creates an interpreter connected to HTTP-owned in-memory stores.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_stores(limits: ExecutionLimits, stores: MemoryStores) -> Self {
+        let mut interpreter = Self::new(limits);
+        interpreter.stores = Some(stores);
+        interpreter
     }
 
     /// Executes a complete program and returns its captured output.
     pub fn execute(mut self, program: &[Statement]) -> Result<String, OrniError> {
+        self.register_declarations(program);
+        for statement in program {
+            if let ExecutionFlow::Return { keyword, .. } = self.execute_statement(statement)? {
+                return Err(
+                    runtime_error(&keyword, "return can only be used inside a function")
+                        .with_code("ORNI-E118"),
+                );
+            }
+        }
+        self.call_application_main()?;
+        Ok(self.output)
+    }
+
+    /// Runs an optional zero-argument application entry point once.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn execute_main(
+        mut self,
+        program: &[Statement],
+    ) -> Result<(String, ApplicationConfig), OrniError> {
+        self.register_declarations(program);
+        for statement in program {
+            if matches!(statement, Statement::Let { .. }) {
+                self.execute_statement(statement)?;
+            }
+        }
+        self.call_application_main()?;
+        Ok((self.output, self.application))
+    }
+
+    /// Calls a validated route handler and returns its response value.
+    #[cfg(any(not(target_arch = "wasm32"), test))]
+    pub fn execute_handler(
+        mut self,
+        program: &[Statement],
+        handler: &str,
+        arguments: Vec<Value>,
+    ) -> Result<Value, OrniError> {
+        self.register_declarations(program);
+        for statement in program {
+            if matches!(statement, Statement::Let { .. }) {
+                self.execute_statement(statement)?;
+            }
+        }
+        let name = Token::new(TokenKind::Identifier(handler.to_owned()), 1, 1);
+        let closing_parenthesis = Token::new(TokenKind::RightParen, 1, 1);
+        self.call_values(&name, &closing_parenthesis, arguments)
+    }
+
+    fn register_declarations(&mut self, program: &[Statement]) {
         for statement in program {
             match statement {
                 Statement::Function {
@@ -109,15 +196,16 @@ impl Interpreter {
                 _ => {}
             }
         }
-        for statement in program {
-            if let ExecutionFlow::Return { keyword, .. } = self.execute_statement(statement)? {
-                return Err(
-                    runtime_error(&keyword, "return can only be used inside a function")
-                        .with_code("ORNI-E118"),
-                );
-            }
+    }
+
+    /// Invokes the optional validated application entry point.
+    fn call_application_main(&mut self) -> Result<(), OrniError> {
+        if self.functions.contains_key("main") {
+            let name = Token::new(TokenKind::Identifier("main".to_owned()), 1, 1);
+            let closing_parenthesis = Token::new(TokenKind::RightParen, 1, 1);
+            self.call_values(&name, &closing_parenthesis, Vec::new())?;
         }
-        Ok(self.output)
+        Ok(())
     }
 
     /// Executes one statement and updates interpreter state when necessary.
@@ -129,7 +217,12 @@ impl Interpreter {
             Statement::Import { .. } => {
                 unreachable!("module imports are resolved before interpretation")
             }
-            Statement::Contract { .. } | Statement::Provider { .. } | Statement::Bind { .. } => {}
+            Statement::Contract { .. }
+            | Statement::Model { .. }
+            | Statement::Store { .. }
+            | Statement::Provider { .. }
+            | Statement::Bind { .. }
+            | Statement::Route { .. } => {}
             Statement::Let {
                 name,
                 declared_type,
@@ -213,6 +306,14 @@ impl Interpreter {
             Statement::Expression(expression) => {
                 self.evaluate(expression)?;
             }
+            Statement::Assert {
+                keyword,
+                expression,
+            } => {
+                if !matches!(self.evaluate(expression)?, Value::Bool(true)) {
+                    return Err(runtime_error(keyword, "assertion failed").with_code("ORNI-E152"));
+                }
+            }
         }
         Ok(ExecutionFlow::Continue)
     }
@@ -284,6 +385,271 @@ impl Interpreter {
             );
         };
         let name = identifier_name(name_token);
+        if matches!(
+            name,
+            "response.ok" | "response.created" | "response.not_found" | "response.bad_request"
+        ) {
+            if arguments.len() != 1 {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            let body = self.evaluate(&arguments[0])?;
+            return Ok(Value::Response {
+                status: match name {
+                    "response.created" => 201,
+                    "response.not_found" => 404,
+                    "response.bad_request" => 400,
+                    _ => 200,
+                },
+                body: Box::new(body),
+            });
+        }
+        if name == "response.no_content" {
+            if !arguments.is_empty() {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'response.no_content' expects 0 argument(s)",
+                )
+                .with_code("ORNI-E108"));
+            }
+            return Ok(Value::Response {
+                status: 204,
+                body: Box::new(Value::Unit),
+            });
+        }
+        if name == "app.name" {
+            let [value] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.name' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::String(name) = self.evaluate(value)? else {
+                return Err(runtime_error(
+                    expression_token(value).unwrap_or(closing_parenthesis),
+                    "app.name requires a string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.application.name = Some(name.to_string());
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = name;
+            return Ok(Value::Unit);
+        }
+        if name == "app.port" {
+            let [value] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.port' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Integer { value: port, .. } = self.evaluate(value)? else {
+                return Err(runtime_error(
+                    expression_token(value).unwrap_or(closing_parenthesis),
+                    "app.port requires an integer",
+                )
+                .with_code("ORNI-E107"));
+            };
+            let port = u16::try_from(port)
+                .ok()
+                .filter(|port| *port > 0)
+                .ok_or_else(|| {
+                    runtime_error(
+                        expression_token(value).unwrap_or(closing_parenthesis),
+                        "app.port must be between 1 and 65535",
+                    )
+                    .with_code("ORNI-E107")
+                })?;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.application.port = port;
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = port;
+            return Ok(Value::Unit);
+        }
+        let values = arguments
+            .iter()
+            .map(|argument| self.evaluate(argument))
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(response) = self.store_call(name, closing_parenthesis, &values)? {
+            return Ok(response);
+        }
+        self.call_values(name_token, closing_parenthesis, values)
+    }
+
+    /// Performs one CRUD operation against an HTTP-owned in-memory store.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn store_call(
+        &mut self,
+        name: &str,
+        _token: &Token,
+        values: &[Value],
+    ) -> Result<Option<Value>, OrniError> {
+        let Some((store_name, operation)) = name.split_once('.') else {
+            return Ok(None);
+        };
+        let Some(stores) = &self.stores else {
+            return Ok(None);
+        };
+        let mut stores = stores.borrow_mut();
+        let Some(store) = stores.get_mut(store_name) else {
+            return Ok(None);
+        };
+        let response = match operation {
+            "list" => Value::Response {
+                status: 200,
+                body: Box::new(Value::List(store.values.values().cloned().collect())),
+            },
+            "create" => {
+                let input = values
+                    .first()
+                    .cloned()
+                    .expect("type checking validates store arity");
+                let Value::Model { fields, .. } = input else {
+                    unreachable!("type checking validates create models")
+                };
+                let id = uuid::Uuid::new_v4();
+                let mut fields = fields;
+                fields.insert("id".to_owned(), Value::Uuid(id));
+                let model = Value::Model {
+                    name: store.model.clone(),
+                    fields,
+                };
+                store.values.insert(id, model.clone());
+                Value::Response {
+                    status: 201,
+                    body: Box::new(model),
+                }
+            }
+            "find" => match values
+                .first()
+                .cloned()
+                .expect("type checking validates store arity")
+            {
+                Value::Uuid(id) => store
+                    .values
+                    .get(&id)
+                    .cloned()
+                    .map(|model| Value::Response {
+                        status: 200,
+                        body: Box::new(model),
+                    })
+                    .unwrap_or_else(|| Value::Response {
+                        status: 404,
+                        body: Box::new(Value::String("Not Found".into())),
+                    }),
+                _ => unreachable!("type checking validates store IDs"),
+            },
+            "replace" => {
+                let id = match values.first() {
+                    Some(Value::Uuid(id)) => *id,
+                    _ => unreachable!("type checking validates store IDs"),
+                };
+                let model = values
+                    .get(1)
+                    .cloned()
+                    .expect("type checking validates store arity");
+                let Value::Model { fields, .. } = model else {
+                    unreachable!("type checking validates replace models")
+                };
+                let mut fields = fields;
+                fields.insert("id".to_owned(), Value::Uuid(id));
+                let model = Value::Model {
+                    name: store.model.clone(),
+                    fields,
+                };
+                if let std::collections::btree_map::Entry::Occupied(mut entry) =
+                    store.values.entry(id)
+                {
+                    entry.insert(model.clone());
+                    Value::Response {
+                        status: 200,
+                        body: Box::new(model),
+                    }
+                } else {
+                    Value::Response {
+                        status: 404,
+                        body: Box::new(Value::String("Not Found".into())),
+                    }
+                }
+            }
+            "patch" => {
+                let id = match values.first() {
+                    Some(Value::Uuid(id)) => *id,
+                    _ => unreachable!("type checking validates store IDs"),
+                };
+                let Value::Model { fields, .. } = values
+                    .get(1)
+                    .cloned()
+                    .expect("type checking validates store arity")
+                else {
+                    unreachable!("type checking validates patch models")
+                };
+                let Some(Value::Model {
+                    fields: current, ..
+                }) = store.values.get_mut(&id)
+                else {
+                    return Ok(Some(Value::Response {
+                        status: 404,
+                        body: Box::new(Value::String("Not Found".into())),
+                    }));
+                };
+                for (name, value) in fields {
+                    current.insert(name, value);
+                }
+                Value::Response {
+                    status: 200,
+                    body: Box::new(
+                        store
+                            .values
+                            .get(&id)
+                            .cloned()
+                            .expect("the stored value exists"),
+                    ),
+                }
+            }
+            "delete" => match values.first() {
+                Some(Value::Uuid(id)) => {
+                    if store.values.remove(id).is_some() {
+                        Value::Response {
+                            status: 204,
+                            body: Box::new(Value::Unit),
+                        }
+                    } else {
+                        Value::Response {
+                            status: 404,
+                            body: Box::new(Value::String("Not Found".into())),
+                        }
+                    }
+                }
+                _ => unreachable!("type checking validates store IDs"),
+            },
+            _ => return Ok(None),
+        };
+        Ok(Some(response))
+    }
+
+    /// Invokes a named function with values supplied by the embedding runtime.
+    fn call_values(
+        &mut self,
+        name_token: &Token,
+        closing_parenthesis: &Token,
+        values: Vec<Value>,
+    ) -> Result<Value, OrniError> {
+        let name = identifier_name(name_token);
         if self.call_depth >= self.limits.max_call_depth {
             return Err(runtime_error(
                 name_token,
@@ -320,7 +686,7 @@ impl Interpreter {
             .iter()
             .filter(|parameter| !matches!(&parameter.type_name, TypeName::Contract(_)))
             .count();
-        if arguments.len() < required_arguments || arguments.len() > supplied_parameter_count {
+        if values.len() < required_arguments || values.len() > supplied_parameter_count {
             let expected = if required_arguments == supplied_parameter_count {
                 format!("{supplied_parameter_count} argument(s)")
             } else {
@@ -333,16 +699,11 @@ impl Interpreter {
                 closing_parenthesis,
                 &format!(
                     "function '{name}' expects {expected}, but received {}",
-                    arguments.len(),
+                    values.len(),
                 ),
             )
             .with_code("ORNI-E108"));
         }
-
-        let values = arguments
-            .iter()
-            .map(|argument| self.evaluate(argument))
-            .collect::<Result<Vec<_>, _>>()?;
 
         self.call_depth += 1;
         self.environment.enter_function_scope();
@@ -640,14 +1001,19 @@ impl Interpreter {
 /// Finds the source token representing a statement-level operation.
 fn statement_token(statement: &Statement) -> Option<&Token> {
     match statement {
-        Statement::Import { keyword, .. } | Statement::Bind { keyword, .. } => Some(keyword),
+        Statement::Import { keyword, .. }
+        | Statement::Bind { keyword, .. }
+        | Statement::Route { keyword, .. } => Some(keyword),
         Statement::Let { name, .. }
         | Statement::Function { name, .. }
         | Statement::Contract { name, .. }
+        | Statement::Model { name, .. }
+        | Statement::Store { name, .. }
         | Statement::Provider { name, .. } => Some(name),
         Statement::Print { keyword, .. }
         | Statement::Return { keyword, .. }
-        | Statement::If { keyword, .. } => Some(keyword),
+        | Statement::If { keyword, .. }
+        | Statement::Assert { keyword, .. } => Some(keyword),
         Statement::Block(_) | Statement::Expression(_) => None,
     }
 }
@@ -704,6 +1070,9 @@ fn coerce_value(
             )
             .with_code("ORNI-E137"))
         }
+        (Value::String(value), Some(TypeName::Uuid)) => uuid::Uuid::parse_str(&value)
+            .map(Value::Uuid)
+            .map_err(|_| runtime_error(token, "value is not a valid UUID").with_code("ORNI-E107")),
         (value, _) => Ok(value),
     }
 }

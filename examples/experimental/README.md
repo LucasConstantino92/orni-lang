@@ -1,8 +1,117 @@
 # Experimental framework features
 
-These examples exercise syntax that is still being validated for Orni 0.8.0.
-They are intentionally kept outside the stable guided examples until the API
-is approved.
+These examples exercise framework syntax that is still being validated. They
+are intentionally kept outside the stable guided examples while the API is
+being explored.
+
+## Typed models preview
+
+Use `model` to declare the exact data shape that a JSON body, response, or
+future store will accept. Fields are currently limited to built-in value types so
+their validation and memory boundaries stay explicit:
+
+```orni
+model User {
+    id: uuid;
+    name: string<80>;
+    email: string<254>;
+}
+
+model CreateUser {
+    name: string<80>;
+    email: string<254>;
+}
+
+model UpdateUser {
+    name: string<80>;
+    email: string<254>;
+}
+
+model PatchUser {
+    name: string<80>;
+    email: string<254>;
+}
+```
+
+POST routes already use these schemas to validate JSON request bodies.
+
+## Native HTTP server preview
+
+The `http_server` example maps a GET route to a function that returns the
+response body. A `:name` segment becomes a matching `string` parameter:
+
+```orni
+func hello(name: string) -> string {
+    return "Hello, " + name + "!";
+}
+
+route get "/hello/:name" => hello;
+```
+
+Run it with the native Rust target from the repository root:
+
+```sh
+cargo run -- serve examples/experimental/http_server
+```
+
+Then open `http://127.0.0.1:3000/hello/Orni`. This preview handles one
+connection at a time, binds only to loopback, and supports GET, POST, PUT, and
+DELETE routes. Literal routes take precedence over parameterized routes. The
+WASI target remains the portable editor/compiler runtime and cannot open a
+network listener.
+
+The same example also exposes a complete in-memory user collection. The model
+is the body contract, and Orni rejects missing fields, extra fields, type
+mismatches, and string limits before calling the handler:
+
+```orni
+model User {
+    id: uuid;
+    name: string<80>;
+    email: string<254>;
+}
+
+store users: User;
+
+func create_user(input: CreateUser) -> response {
+    return users.create(input);
+}
+
+func get_user(id: uuid) -> response { return users.find(id); }
+func update_user(id: uuid, input: UpdateUser) -> response { return users.replace(id, input); }
+func patch_user(id: uuid, input: PatchUser) -> response { return users.patch(id, input); }
+func delete_user(id: uuid) -> response { return users.delete(id); }
+
+route post "/users" => create_user;
+route get "/users/:id" => get_user;
+route put "/users/:id" => update_user;
+route patch "/users/:id" => patch_user;
+route delete "/users/:id" => delete_user;
+```
+
+Send a request while the server is running:
+
+```sh
+curl -i -X POST http://127.0.0.1:3000/users -H "Content-Type: application/json" -d '{"name":"Orni","email":"hello@orni.dev"}'
+```
+
+The server generates the UUID, responds with `201 Created`, and keeps the value until the server
+stops. The remaining example handlers expose `find`, `replace`, and `delete`.
+
+The `http_server` example also converts route values safely. Its `uint16`
+handler parameter accepts `/users/42`, while an out-of-range input returns
+`400 Bad Request` before the handler executes:
+
+```orni
+func user(id: uint16) -> string {
+    return "User #" + id;
+}
+
+route get "/users/:id" => user;
+```
+
+Use `uuid` when identifiers are generated outside the application. Orni
+validates the UUID before the handler runs, just like integer ranges.
 
 Run the contracts and providers example from the repository root:
 

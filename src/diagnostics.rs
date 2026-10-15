@@ -169,7 +169,8 @@ impl OrniError {
         Self::new("ORNI-S001", "Syntax error", line, column, message)
     }
 
-    pub(crate) fn runtime(line: usize, column: usize, message: impl Into<String>) -> Self {
+    /// Creates a runtime diagnostic at a one-based source position.
+    pub fn runtime(line: usize, column: usize, message: impl Into<String>) -> Self {
         Self::new("ORNI-R001", "Runtime error", line, column, message)
     }
 
@@ -191,7 +192,7 @@ impl OrniError {
 
     pub(crate) fn with_source(mut self, path: &Path) -> Self {
         for diagnostic in &mut self.diagnostics {
-            diagnostic.source = Some(path.display().to_string());
+            diagnostic.source = Some(path.to_string_lossy().replace('\\', "/"));
         }
         self
     }

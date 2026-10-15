@@ -7,6 +7,51 @@ const { hoverFor, signatureHelpFor, inlayHintsFor } = require("./editor-symbols"
 const { definitionFor, moduleCompletionsFor } = require("./editor-navigation");
 
 let analysis;
+let developmentTerminal;
+let developmentRoot;
+
+/** Starts an Orni development server in a named terminal. */
+function launchDevelopmentServer(root) {
+  developmentRoot = root;
+  developmentTerminal = vscode.window.createTerminal({ name: "Orni Server", cwd: root });
+  developmentTerminal.show(true);
+  developmentTerminal.sendText("orni dev");
+  return vscode.window.showInformationMessage("Starting the Orni development server.");
+}
+
+/** Finds the current project and starts its native development server. */
+function startDevelopmentServer() {
+  const current = vscode.window.activeTextEditor?.document;
+  const project = current && current.languageId === "orni" ? projectFor(current.uri.fsPath) : undefined;
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  const root = project?.root || workspace?.uri.fsPath;
+  if (!root) {
+    return vscode.window.showErrorMessage("Open an Orni project before starting the development server.");
+  }
+  if (developmentTerminal) {
+    developmentTerminal.show(true);
+    return vscode.window.showInformationMessage("The Orni development server terminal is already open.");
+  }
+  return launchDevelopmentServer(root);
+}
+
+/** Stops the current development server by closing its terminal. */
+function stopDevelopmentServer() {
+  if (!developmentTerminal) {
+    return vscode.window.showInformationMessage("No Orni development server is running.");
+  }
+  developmentTerminal.dispose();
+  developmentTerminal = undefined;
+  return vscode.window.showInformationMessage("Stopped the Orni development server.");
+}
+
+/** Restarts the most recently started development server. */
+function restartDevelopmentServer() {
+  if (developmentTerminal) developmentTerminal.dispose();
+  developmentTerminal = undefined;
+  if (developmentRoot) return launchDevelopmentServer(developmentRoot);
+  return startDevelopmentServer();
+}
 
 /** Activates semantic navigation and documentation for Orni files. */
 function activate(context) {
@@ -30,6 +75,9 @@ function activate(context) {
       return vscode.window.showInformationMessage("Place the cursor on an Orni diagnostic to read its correction steps.");
     }),
     vscode.commands.registerCommand("orni.analyzeWorkspace", () => analyzeWorkspace(diagnostics)),
+    vscode.commands.registerCommand("orni.startDevelopmentServer", startDevelopmentServer),
+    vscode.commands.registerCommand("orni.stopDevelopmentServer", stopDevelopmentServer),
+    vscode.commands.registerCommand("orni.restartDevelopmentServer", restartDevelopmentServer),
     watcher,
     watcher.onDidCreate((uri) => fileChanged(uri, diagnostics, true)),
     watcher.onDidChange((uri) => fileChanged(uri, diagnostics)),
@@ -92,6 +140,9 @@ function activate(context) {
       if (contentChanges.length) scheduleDiagnostics(document, diagnostics);
     }),
     vscode.workspace.onDidCloseTextDocument((document) => closeDocument(document, diagnostics)),
+    vscode.window.onDidCloseTerminal((terminal) => {
+      if (terminal === developmentTerminal) developmentTerminal = undefined;
+    }),
   );
 
   for (const document of vscode.workspace.textDocuments) {

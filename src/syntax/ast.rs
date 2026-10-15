@@ -1,5 +1,7 @@
 use std::rc::Rc;
 
+use uuid::Uuid;
+
 use super::Token;
 
 /// The storage range selected for an integer value.
@@ -80,10 +82,16 @@ pub(crate) enum TypeName {
     Bool,
     /// A single Unicode scalar value.
     Char,
+    /// A universally unique identifier stored as 16 bytes.
+    Uuid,
     /// The absence of a meaningful value.
     Unit,
     /// A user-defined dependency contract.
     Contract(String),
+    /// A user-defined typed data model.
+    Model(String),
+    /// An explicit HTTP response produced by a route handler.
+    Response,
 }
 
 impl std::fmt::Display for TypeName {
@@ -95,8 +103,11 @@ impl std::fmt::Display for TypeName {
             Self::String(None) => write!(formatter, "string"),
             Self::Bool => write!(formatter, "bool"),
             Self::Char => write!(formatter, "char"),
+            Self::Uuid => write!(formatter, "uuid"),
             Self::Unit => write!(formatter, "unit"),
             Self::Contract(name) => write!(formatter, "{name}"),
+            Self::Model(name) => write!(formatter, "{name}"),
+            Self::Response => write!(formatter, "response"),
         }
     }
 }
@@ -123,6 +134,15 @@ pub(crate) struct Parameter {
     pub default_value: Option<Expression>,
 }
 
+/// One named, typed field in a data model.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ModelField {
+    /// The field name and its source position.
+    pub name: Token,
+    /// The value type accepted by this field.
+    pub type_name: TypeName,
+}
+
 /// A complete action that can appear in an Orni program.
 ///
 /// Statements perform work but do not directly produce a reusable value.
@@ -146,6 +166,22 @@ pub(crate) enum Statement {
         /// Required method signatures.
         methods: Vec<ContractMethod>,
     },
+    /// Declares the typed shape of application data.
+    Model {
+        /// The model name.
+        name: Token,
+        /// Fields required by values of this model.
+        fields: Vec<ModelField>,
+    },
+    /// Declares an in-memory collection of values for one model.
+    Store {
+        /// The `store` token used for diagnostics.
+        keyword: Token,
+        /// The collection name used by route handlers.
+        name: Token,
+        /// The model retained by this collection.
+        model: Token,
+    },
     /// Implements one dependency contract.
     Provider {
         /// The provider name.
@@ -166,6 +202,17 @@ pub(crate) enum Statement {
         /// The provider selected for the contract.
         provider: Token,
     },
+    /// Maps an HTTP GET path to a zero-argument string handler.
+    Route {
+        /// The `route` token used for diagnostics.
+        keyword: Token,
+        /// The HTTP method accepted by the route.
+        method: Token,
+        /// The URL path accepted by the route.
+        path: Token,
+        /// The function called to produce the response body.
+        handler: Token,
+    },
     /// Declares a variable in the active scope.
     Let {
         /// The variable name and its source position.
@@ -174,6 +221,13 @@ pub(crate) enum Statement {
         declared_type: Option<TypeName>,
         /// The expression evaluated before the variable is defined.
         value: Expression,
+    },
+    /// Verifies that an expression evaluates to true.
+    Assert {
+        /// The keyword used for diagnostics.
+        keyword: Token,
+        /// The boolean condition required by the assertion.
+        expression: Expression,
     },
     /// Declares a named function.
     Function {
@@ -271,6 +325,27 @@ pub(crate) enum Value {
     Bool(bool),
     /// A single Unicode scalar value.
     Char(char),
+    /// A validated universally unique identifier.
+    Uuid(Uuid),
+    /// A typed record with fields declared by a model.
+    #[allow(dead_code)]
+    // Constructed by the native HTTP JSON boundary, which is unavailable in WASI.
+    Model {
+        /// The model declaration name.
+        name: String,
+        /// Values indexed by their declared field names.
+        fields: std::collections::BTreeMap<String, Value>,
+    },
+    /// An ordered collection returned by native HTTP store operations.
+    #[allow(dead_code)]
+    List(Vec<Value>),
+    /// An HTTP response value created by the response built-ins.
+    Response {
+        /// The HTTP status code.
+        status: u16,
+        /// The JSON or text value sent to the client.
+        body: Box<Value>,
+    },
     /// The absence of a meaningful value, currently returned by functions.
     Unit,
     /// A stateless provider selected for a dependency contract.
@@ -290,6 +365,10 @@ impl std::fmt::Display for Value {
             Self::String(value) => write!(formatter, "{value}"),
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::Char(value) => write!(formatter, "{value}"),
+            Self::Uuid(value) => write!(formatter, "{value}"),
+            Self::Model { name, .. } => write!(formatter, "{name}"),
+            Self::List(values) => write!(formatter, "{} item(s)", values.len()),
+            Self::Response { body, .. } => write!(formatter, "{body}"),
             Self::Unit => write!(formatter, "unit"),
             Self::Provider { provider, .. } => write!(formatter, "{provider}"),
         }
@@ -305,6 +384,10 @@ impl Value {
             Self::String(value) => TypeName::String(Some(value.len())),
             Self::Bool(_) => TypeName::Bool,
             Self::Char(_) => TypeName::Char,
+            Self::Uuid(_) => TypeName::Uuid,
+            Self::Model { name, .. } => TypeName::Model(name.clone()),
+            Self::List(_) => TypeName::Response,
+            Self::Response { .. } => TypeName::Response,
             Self::Unit => TypeName::Unit,
             Self::Provider { contract, .. } => TypeName::Contract(contract.clone()),
         }

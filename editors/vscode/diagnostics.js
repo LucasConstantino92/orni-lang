@@ -1,6 +1,6 @@
 const vscode = require("vscode");
 const { startCompiler } = require("./compiler-client");
-const { projectFor, resolveModule } = require("./project-support");
+const { isTestFile, projectFor, resolveModule } = require("./project-support");
 const { diagnosticGuidance } = require("./diagnostic-guidance");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -215,7 +215,7 @@ function createDiagnostics(extensionPath) {
   }
 
   /** Runs analysis serially and rejects results from superseded editor buffers. */
-  async function updateDiagnostics(document, diagnostics, asModule = false, background = false) {
+  async function updateDiagnostics(document, diagnostics, asModule = false, background = false, asTest = false) {
     if (stopped || document.languageId !== "orni" || document.isClosed) return;
     let folder;
     try {
@@ -229,7 +229,7 @@ function createDiagnostics(extensionPath) {
       return;
     }
     compilerSnapshots.delete(`${document.uri}:configuration`);
-    const entry = asModule ? document.uri.fsPath : folder.project?.entry ?? document.uri.fsPath;
+    const entry = asModule || asTest ? document.uri.fsPath : folder.project?.entry ?? document.uri.fsPath;
     const key = vscode.Uri.file(entry).toString() + (asModule ? ":module" : "");
     const snapshot = analysisSnapshot(entry, folder, document);
     if (completedFingerprints.get(key) === snapshot.fingerprint && !(asModule && !background)) {
@@ -345,7 +345,8 @@ function createDiagnostics(extensionPath) {
             let project;
             try { project = projectFor(uri.fsPath); }
             catch { /* updateDiagnostics publishes persistent project-setting errors. */ }
-            await updateDiagnostics(document, diagnostics, Boolean(project && project.entry !== uri.fsPath), true);
+            const asTest = isTestFile(uri.fsPath, project);
+            await updateDiagnostics(document, diagnostics, Boolean(project && project.entry !== uri.fsPath && !asTest), true, asTest);
           } catch (error) {
             console.error(`Could not analyze ${uri.fsPath}: ${error.message}`);
           }
@@ -457,7 +458,10 @@ function createDiagnostics(extensionPath) {
     }
     diagnosticTimers.set(key, setTimeout(() => {
       diagnosticTimers.delete(key);
-      updateDiagnostics(document, diagnostics).catch((error) => {
+      let asTest = false;
+      try { asTest = isTestFile(document.uri.fsPath, projectFor(document.uri.fsPath)); }
+      catch { /* updateDiagnostics publishes project configuration errors. */ }
+      updateDiagnostics(document, diagnostics, false, false, asTest).catch((error) => {
         if (!document.isClosed) diagnostics.set(document.uri, [compilerFailureDiagnostic(document, error.message)]);
       });
       scheduleWorkspaceAnalysis(diagnostics, document.uri);

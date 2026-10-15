@@ -4,6 +4,6 @@ mod ast;
 mod token;
 
 pub(crate) use ast::{
-    ContractMethod, Expression, IntegerType, Parameter, Statement, TypeName, Value,
+    ContractMethod, Expression, IntegerType, ModelField, Parameter, Statement, TypeName, Value,
 };
 pub(crate) use token::{Token, TokenKind};

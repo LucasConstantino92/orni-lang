@@ -4,7 +4,7 @@ const { resolveModule } = require("./project-support");
 
 const path = require("node:path");
 
-const { findClosestDeclaration, findContracts, findFunctions, findImports, findVariables, findProviders } = require("./language-support");
+const { findClosestDeclaration, findContracts, findFunctionParameters, findFunctions, findImports, findModels, findProviders, findStores, findVariables } = require("./language-support");
 
 const { workspacePublicMembers, autoImportEdit } = require("./module-actions");
 
@@ -15,11 +15,13 @@ async function definitionFor(document, position) {
   const symbol = symbolAt(document, position);
   if (!symbol) return undefined;
 
-  const backendDefinition = await backendDefinitionFor(symbol.name);
-  if (backendDefinition) return backendDefinition;
-
   const source = document.getText();
   const usageOffset = document.offsetAt(position);
+  const backendDefinition = await backendDefinitionFor(
+    storeOperationAt(source, usageOffset, symbol.name) || symbol.name,
+  );
+  if (backendDefinition) return backendDefinition;
+
   const moduleImport = findImports(source).find(
     (candidate) =>
       usageOffset >= candidate.offset &&
@@ -74,6 +76,14 @@ async function definitionFor(document, position) {
   const declaration =
     findClosestDeclaration(findFunctions(source), symbol.name, usageOffset) ||
     findClosestDeclaration(findVariables(source), symbol.name, usageOffset) ||
+    findClosestDeclaration(findModels(source), symbol.name, usageOffset) ||
+    findClosestDeclaration(findStores(source), symbol.name, usageOffset) ||
+    findFunctionParameters(source).find(
+      (parameter) =>
+        parameter.name === symbol.name &&
+        usageOffset >= parameter.offset &&
+        usageOffset <= parameter.scopeEnd,
+    ) ||
     findContracts(source).find(({ name }) => name === symbol.name) ||
     findProviders(source).find(({ name }) => name === symbol.name);
 
@@ -85,6 +95,17 @@ async function definitionFor(document, position) {
   );
   return directImport
     ? importedMemberLocation(document, directImport, symbol.name)
+    : undefined;
+}
+
+/** Returns the native implementation key for a store operation under the cursor. */
+function storeOperationAt(source, usageOffset, symbolName) {
+  if (!new Set(["create", "list", "find", "replace", "patch", "delete"]).has(symbolName)) {
+    return undefined;
+  }
+  const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
+  return /[A-Za-z_][A-Za-z0-9_]*\s*\.\s*$/.test(before)
+    ? `store.${symbolName}`
     : undefined;
 }
 

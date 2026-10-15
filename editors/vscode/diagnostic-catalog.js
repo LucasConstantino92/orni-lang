@@ -51,6 +51,7 @@ const diagnosticCatalog = {
   "ORNI-E149": ["Remove pub from the declaration", "Declarations are public by default; remove pub.", "Prefix the name with _ when the declaration should be private."],
   "ORNI-E150": ["Call a named function or provider method", "Use a declared func name or an injected dependency method as the call target.", "First-class function values and calls on arbitrary expression results are not supported."],
   "ORNI-E151": ["Use a supported member-access target", "Access a member through an imported module namespace or a named injected dependency.", "Arbitrary object property access is not supported in this preview."],
+  "ORNI-E152": ["Fix the HTTP route declaration", "Use a unique absolute GET path and point it to a string-returning function.", "Use :name URL segments only with matching handler parameters of a supported route type.", "For example: route get \"/users/:id\" => user;"],
 };
 
 const codeExamples = {

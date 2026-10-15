@@ -62,6 +62,7 @@ inspect details and source declarations, and must be omitted when unsafe.
 | `ORNI-E149` | Remove pub from the declaration |
 | `ORNI-E150` | Call a named function or provider method |
 | `ORNI-E151` | Use a supported member-access target |
+| `ORNI-E152` | Fix the HTTP route declaration |
 
 Phase-wide fallback codes (`ORNI-L001`, `ORNI-S001`, `ORNI-T001`, `ORNI-M001`,
 `ORNI-R001`) remain supported. Warning codes `ORNI-W001` through `ORNI-W004`

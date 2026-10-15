@@ -1,6 +1,6 @@
 use crate::{
     diagnostics::OrniError,
-    syntax::{ContractMethod, IntegerType, Parameter, Statement, TokenKind, TypeName},
+    syntax::{ContractMethod, IntegerType, ModelField, Parameter, Statement, TokenKind, TypeName},
 };
 
 use super::{Parser, syntax_error};
@@ -18,11 +18,20 @@ impl Parser {
         if self.matches(|kind| matches!(kind, TokenKind::Contract)) {
             return self.contract_statement();
         }
+        if self.matches(|kind| matches!(kind, TokenKind::Model)) {
+            return self.model_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Store)) {
+            return self.store_statement();
+        }
         if self.matches(|kind| matches!(kind, TokenKind::Provider)) {
             return self.provider_statement();
         }
         if self.matches(|kind| matches!(kind, TokenKind::Bind)) {
             return self.bind_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Route)) {
+            return self.route_statement();
         }
         if self.matches(|kind| matches!(kind, TokenKind::Pub)) {
             let token = self.previous();
@@ -39,6 +48,18 @@ impl Parser {
         }
         if self.matches(|kind| matches!(kind, TokenKind::Print)) {
             return self.print_statement();
+        }
+        if self.matches(|kind| matches!(kind, TokenKind::Assert)) {
+            let keyword = self.previous().clone();
+            let expression = self.expression()?;
+            self.consume(
+                |kind| matches!(kind, TokenKind::Semicolon),
+                "expected ';' after the assertion",
+            )?;
+            return Ok(Statement::Assert {
+                keyword,
+                expression,
+            });
         }
         if self.matches(|kind| matches!(kind, TokenKind::Return)) {
             return self.return_statement();
@@ -181,6 +202,85 @@ impl Parser {
         Ok(Statement::Contract { name, methods })
     }
 
+    /// Parses a typed data schema with semicolon-terminated fields.
+    fn model_statement(&mut self) -> Result<Statement, OrniError> {
+        let name = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a model name after 'model'",
+        )?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::LeftBrace),
+            "expected '{' after the model name",
+        )?;
+        let mut fields = Vec::new();
+        while !matches!(self.peek().kind, TokenKind::RightBrace) && !self.is_at_end() {
+            let field_name = self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_)),
+                "expected a field name in the model",
+            )?;
+            if fields
+                .iter()
+                .any(|field: &ModelField| field.name.kind == field_name.kind)
+            {
+                return Err(
+                    syntax_error(&field_name, "model field name is already declared")
+                        .with_code("ORNI-E116"),
+                );
+            }
+            self.consume(
+                |kind| matches!(kind, TokenKind::Colon),
+                "expected ':' after the model field name",
+            )?;
+            let type_name = self.type_name()?;
+            self.consume(
+                |kind| matches!(kind, TokenKind::Semicolon),
+                "expected ';' after the model field",
+            )?;
+            fields.push(ModelField {
+                name: field_name,
+                type_name,
+            });
+        }
+        self.consume(
+            |kind| matches!(kind, TokenKind::RightBrace),
+            "expected '}' after the model fields",
+        )?;
+        Ok(Statement::Model { name, fields })
+    }
+
+    /// Parses a named model collection retained by the native HTTP server.
+    fn store_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
+        if self.nesting > 1 {
+            return Err(syntax_error(
+                &keyword,
+                "stores must be declared at the application top level",
+            )
+            .with_code("ORNI-E152"));
+        }
+        let name = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a store name after 'store'",
+        )?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::Colon),
+            "expected ':' after the store name",
+        )?;
+        let model = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a model name after ':'",
+        )?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::Semicolon),
+            "expected ';' after the store declaration",
+        )?;
+        Ok(Statement::Store {
+            keyword,
+            name,
+            model,
+        })
+    }
+
     /// Parses a concrete provider implementation.
     fn provider_statement(&mut self) -> Result<Statement, OrniError> {
         let name = self.consume(
@@ -238,6 +338,52 @@ impl Parser {
             keyword,
             contract,
             provider,
+        })
+    }
+
+    fn route_statement(&mut self) -> Result<Statement, OrniError> {
+        let keyword = self.previous().clone();
+        if self.nesting > 1 {
+            return Err(syntax_error(
+                &keyword,
+                "HTTP routes must be declared at the application top level",
+            )
+            .with_code("ORNI-E152"));
+        }
+        let method = self.consume(
+            |kind| {
+                matches!(
+                    kind,
+                    TokenKind::Get
+                        | TokenKind::Post
+                        | TokenKind::Put
+                        | TokenKind::Patch
+                        | TokenKind::Delete
+                )
+            },
+            "only GET, POST, PUT, and DELETE routes are supported in this preview",
+        )?;
+        let path = self.consume(
+            |kind| matches!(kind, TokenKind::String(_)),
+            "expected a quoted path after 'route get'",
+        )?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::FatArrow),
+            "expected '=>' before the route handler",
+        )?;
+        let handler = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a handler function name after '=>'",
+        )?;
+        self.consume(
+            |kind| matches!(kind, TokenKind::Semicolon),
+            "expected ';' after the route declaration",
+        )?;
+        Ok(Statement::Route {
+            keyword,
+            method,
+            path,
+            handler,
         })
     }
 
@@ -346,7 +492,10 @@ impl Parser {
             }
             "bool" => Ok(TypeName::Bool),
             "char" => Ok(TypeName::Char),
+            "uuid" => Ok(TypeName::Uuid),
+            "response" => Ok(TypeName::Response),
             "unit" => Ok(TypeName::Unit),
+            _ if self.model_names.contains(name) => Ok(TypeName::Model(name.to_owned())),
             _ => Ok(TypeName::Contract(name.to_owned())),
         }
     }

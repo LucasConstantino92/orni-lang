@@ -145,6 +145,53 @@ function findFunctions(source) {
   return functions;
 }
 
+/** Finds model declarations and their names for navigation and hover support. */
+function findModels(source) {
+  const pattern = /\bmodel[ \t]+([A-Za-z_][A-Za-z0-9_]*)\s*\{/g;
+  return Array.from(syntaxMask(source).matchAll(pattern), (match) => ({
+    name: match[1],
+    offset: match.index + match[0].indexOf(match[1]),
+  }));
+}
+
+/** Finds in-memory store declarations and their associated model type. */
+function findStores(source) {
+  const pattern = /\bstore[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  return Array.from(syntaxMask(source).matchAll(pattern), (match) => ({
+    name: match[1],
+    model: match[2],
+    offset: match.index + match[0].indexOf(match[1]),
+  }));
+}
+
+/** Finds parameter declarations whose names are visible inside their function body. */
+function findFunctionParameters(source) {
+  const mask = syntaxMask(source);
+  const pattern = /\bfunc\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/g;
+  const parameters = [];
+  for (const match of mask.matchAll(pattern)) {
+    const opening = match.index + match[0].lastIndexOf("(");
+    const closing = closingDelimiter(mask, opening, "(", ")");
+    if (closing < 0) continue;
+    const body = mask.slice(closing + 1).match(/^\s*->\s*[A-Za-z_][A-Za-z0-9_]*(?:\s*<\s*\d+\s*>)?\s*\{/);
+    if (!body) continue;
+    const bodyOpening = closing + 1 + body[0].lastIndexOf("{");
+    const bodyClosing = closingDelimiter(mask, bodyOpening, "{", "}");
+    const rawParameters = source.slice(opening + 1, closing);
+    const parameterPattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*<\s*\d+\s*>)?)/g;
+    for (const parameter of rawParameters.matchAll(parameterPattern)) {
+      parameters.push({
+        name: parameter[1],
+        typeName: parameter[2].replace(/\s/g, ""),
+        offset: opening + 1 + parameter.index + parameter[0].indexOf(parameter[1]),
+        scopeStart: bodyOpening,
+        scopeEnd: bodyClosing < 0 ? source.length : bodyClosing,
+      });
+    }
+  }
+  return parameters;
+}
+
 /** Finds dotted file-module imports in an Orni source document. */
 function findImports(source) {
   const pattern = /^[ \t]*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?:\.\{([^}]*)\})?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;/gm;
@@ -377,10 +424,13 @@ module.exports = {
   findBoundedStringViolations,
   findBoundedVariableViolations,
   findContracts,
+  findFunctionParameters,
   findFunctions,
   findImports,
+  findModels,
   findProviders,
   findStringCapacityAnnotation,
+  findStores,
   findUnusedImports,
   findUnusedPrivateFunctions,
   findVariables,

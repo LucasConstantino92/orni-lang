@@ -10,6 +10,7 @@ This extension provides basic editor support for `.orni` files:
 - live structured diagnostics with stable codes, full ranges, and exact module paths;
 - multiple compiler errors reported in one analysis pass;
 - context-aware Quick Fix actions through `Ctrl+.`;
+- start, stop, and restart buttons for the local `orni dev` server;
 - an Orni-specific `Ctrl+.` shortcut in editors that use a different default keybinding;
 - project-aware binding fixes that update the executable composition file;
 - provider skeleton generation from contract methods when no implementation exists;
@@ -40,7 +41,7 @@ npx @vscode/vsce package --allow-missing-repository
 Install the generated VSIX:
 
 ```sh
-code --install-extension orni-language-0.7.6.vsix
+code --install-extension orni-language-0.9.0.vsix
 ```
 
 Alternatively, use **Extensions: Install from VSIX...** from the Command
@@ -54,6 +55,9 @@ to build the extension, not to use it. A VS Code 1.95-compatible editor is requi
 Use `orni.toml` to declare the application entry and source directory. Navigation,
 auto-imports, and diagnostics use that source root even from nested modules.
 `Orni: Validate Application` saves open files and checks the manifest entry.
+Use the play, stop, or refresh buttons in an Orni editor, or their matching
+commands from the Command Palette, to control an `Orni Server` terminal at the
+project root.
 Live checks include unsaved Orni buffers without writing them to disk.
 The extension also analyzes unopened workspace files automatically at startup.
 Subsequent edits recheck changed files and their transitive importers, using

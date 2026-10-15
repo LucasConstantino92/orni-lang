@@ -2,7 +2,7 @@
   "name": "orni-language",
   "displayName": "Orni Language",
   "description": "Language support for the Orni programming language.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "orni-lang",
   "license": "MIT",
   "repository": {
@@ -61,6 +61,12 @@
           "default": "",
           "scope": "machine-overridable",
           "description": "Path to an installed Orni executable. Leave empty to use the bundled compiler."
+        },
+        "orni.sourcePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Path to the Orni source repository, used for Ctrl+Click navigation to native Rust implementations."
         }
       }
     },
@@ -85,6 +91,21 @@
         "title": "Orni: Analyze Workspace"
       },
       {
+        "command": "orni.startDevelopmentServer",
+        "title": "Orni: Start Development Server",
+        "icon": "$(play)"
+      },
+      {
+        "command": "orni.stopDevelopmentServer",
+        "title": "Orni: Stop Development Server",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "orni.restartDevelopmentServer",
+        "title": "Orni: Restart Development Server",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "orni.validateApplication",
         "title": "Orni: Validate Application"
       },
@@ -93,6 +114,25 @@
         "title": "Orni: Check Current File as Module"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "orni.startDevelopmentServer",
+          "when": "editorLangId == orni",
+          "group": "navigation"
+        },
+        {
+          "command": "orni.stopDevelopmentServer",
+          "when": "editorLangId == orni",
+          "group": "navigation"
+        },
+        {
+          "command": "orni.restartDevelopmentServer",
+          "when": "editorLangId == orni",
+          "group": "navigation"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "orni",
