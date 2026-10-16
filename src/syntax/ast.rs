@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -229,6 +229,15 @@ pub(crate) enum Statement {
         /// The boolean condition required by the assertion.
         expression: Expression,
     },
+    /// Groups assertions into one named test scenario.
+    Test {
+        /// The test keyword used in diagnostics.
+        keyword: Token,
+        /// Human-readable scenario name.
+        name: Token,
+        /// Statements evaluated by this scenario.
+        body: Vec<Statement>,
+    },
     /// Declares a named function.
     Function {
         /// The function name and its source position.
@@ -320,7 +329,7 @@ pub(crate) enum Value {
     /// A double-precision floating-point number.
     Double(f64),
     /// A UTF-8 string.
-    String(Rc<str>),
+    String(Arc<str>),
     /// A boolean value.
     Bool(bool),
     /// A single Unicode scalar value.
@@ -345,6 +354,8 @@ pub(crate) enum Value {
         status: u16,
         /// The JSON or text value sent to the client.
         body: Box<Value>,
+        /// User-defined response headers validated by the response helpers.
+        headers: Vec<(String, String)>,
     },
     /// The absence of a meaningful value, currently returned by functions.
     Unit,

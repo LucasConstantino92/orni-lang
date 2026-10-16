@@ -33,6 +33,25 @@ function createDiagnostics(extensionPath) {
   let analysisQueue = Promise.resolve();
   let stopped = false;
 
+  /** Keeps deliberately failing compiler fixtures out of ordinary workspace Problems. */
+  function isIntentionalErrorFixture(file) {
+    const relative = path.relative(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || "", file);
+    const parts = relative.split(path.sep);
+    if (parts.includes("test")) return true;
+    const examples = parts.indexOf("examples");
+    return examples >= 0 && parts.slice(examples + 1).includes("errors");
+  }
+
+  /** Drops cached markers left by fixture files excluded from the next scan. */
+  function clearIntentionalFixtureDiagnostics() {
+    for (const [key, entries] of compilerSnapshots) {
+      if (entries.some(({ uri }) => isIntentionalErrorFixture(uri.fsPath))) {
+        compilerSnapshots.delete(key);
+        compilerDiagnosticUris.delete(key.replace(/:module$/, ""));
+      }
+    }
+  }
+
   /** Refreshes import ownership from the latest buffer or saved source. */
   function indexFile(file, sourceRoot) {
     try {
@@ -154,8 +173,12 @@ function createDiagnostics(extensionPath) {
   function lintDiagnostics(document) {
     const source = document.getText();
     const mask = syntaxMask(source);
+    const exportedModule = dependencyIndex.hasImporters(document.uri.fsPath);
     return findVariables(source).flatMap((variable) => {
       if (variable.name.startsWith("_")) return [];
+      // Public top-level values are part of a module API. Their readers can be
+      // in another file, so a document-only count would produce a false warning.
+      if (exportedModule && isTopLevelDeclaration(mask, variable.offset)) return [];
       const uses = mask.match(new RegExp(`\\b${variable.name}\\b`, "g")) || [];
       if (uses.length > 1) return [];
       const start = document.positionAt(variable.offset);
@@ -168,6 +191,16 @@ function createDiagnostics(extensionPath) {
       diagnostic.code = "orni.unusedVariable";
       return [diagnostic];
     });
+  }
+
+  /** Identifies declarations outside function or block bodies in masked source. */
+  function isTopLevelDeclaration(mask, offset) {
+    let depth = 0;
+    for (const character of mask.slice(0, offset)) {
+      if (character === "{") depth++;
+      else if (character === "}") depth--;
+    }
+    return depth === 0;
   }
 
   /** Rebuilds Problems from all application checks, preserving shared-module ownership. */
@@ -326,6 +359,9 @@ function createDiagnostics(extensionPath) {
           statistics.workspaceScans++;
           fullWorkspaceScan = false;
           files = await vscode.workspace.findFiles("**/*.orni", "**/{.git,target,node_modules,.vscode-test}/**");
+          files = files.filter((uri) => !isIntentionalErrorFixture(uri.fsPath));
+          clearIntentionalFixtureDiagnostics();
+          publishDiagnostics(diagnostics);
           const existing = new Set(files.map((uri) => uri.fsPath));
           for (const file of dependencyIndex.nodes.keys()) if (!existing.has(file)) {
             dependencyIndex.delete(file);
@@ -440,7 +476,7 @@ function createDiagnostics(extensionPath) {
 
   /** Debounces edits immediately, invalidating an older in-flight check. */
   function scheduleDiagnostics(document, diagnostics) {
-    if (stopped || document.languageId !== "orni") return;
+    if (stopped || document.languageId !== "orni" || isIntentionalErrorFixture(document.uri.fsPath)) return;
     const key = document.uri.toString();
     if (document.isDirty) unsavedDocuments.add(key);
     // Remember edits until close: revert-and-close can deliver a clean buffer

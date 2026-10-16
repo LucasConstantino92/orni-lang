@@ -5,6 +5,8 @@ use std::{
     process,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use orni::run_api_test_file;
 use orni::{
     OrniDiagnostic, Project, check, diagnose_file, diagnose_file_with_source, diagnose_module,
     diagnose_module_buffers, diagnose_project_buffers, run_file,
@@ -198,10 +200,16 @@ fn main() {
 
 fn run_tests(path: &str) -> Result<String, orni::OrniError> {
     let path = PathBuf::from(portable_path(path));
+    let project = if path.is_file() {
+        None
+    } else {
+        Project::discover(&path)?
+    };
     let tests_root = if path.is_file() {
         return run_file(&path).map(|_| format!("PASS {}\n\n1 test passed.\n", path.display()));
     } else {
-        Project::discover(&path)?
+        project
+            .as_ref()
             .map_or_else(|| path.join("tests"), |project| project.root.join("tests"))
     };
     let mut files = Vec::new();
@@ -216,10 +224,28 @@ fn run_tests(path: &str) -> Result<String, orni::OrniError> {
     let mut output = String::new();
     let mut passed = 0_usize;
     for file in files {
-        match run_file(&file) {
-            Ok(_) => {
-                passed += 1;
-                output.push_str(&format!("PASS {}\n", file.display()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = project.as_ref().map_or_else(
+            || run_file(&file),
+            |project| run_api_test_file(&project.entry, &file, project.runtime),
+        );
+        #[cfg(target_arch = "wasm32")]
+        let result = run_file(&file);
+        match result {
+            Ok(test_output) => {
+                let scenarios = test_output
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("PASS "))
+                    .collect::<Vec<_>>();
+                if scenarios.is_empty() {
+                    passed += 1;
+                    output.push_str(&format!("PASS {}\n", file.display()));
+                } else {
+                    passed += scenarios.len();
+                    for scenario in scenarios {
+                        output.push_str(&format!("PASS {} :: {scenario}\n", file.display()));
+                    }
+                }
             }
             Err(error) => {
                 output.push_str(&format!("FAIL {}\n{error}\n", file.display()));
@@ -270,21 +296,59 @@ fn create_project(name: &str, empty: bool) -> Result<String, String> {
             root.display()
         ));
     }
-    fs::create_dir_all(root.join("src/services")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root.join("src/app")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root.join("src/features/health")).map_err(|error| error.to_string())?;
+    if !empty {
+        fs::create_dir_all(root.join("src/features/users")).map_err(|error| error.to_string())?;
+    }
     fs::create_dir_all(root.join("tests")).map_err(|error| error.to_string())?;
     fs::write(
         root.join("orni.toml"),
         format!("[project]\nname = \"{name}\"\nentry = \"src/main.orni\"\nsource = \"src\"\n"),
     )
     .map_err(|error| error.to_string())?;
-    let source = if empty { EMPTY_TEMPLATE } else { CRUD_TEMPLATE };
-    fs::write(root.join("src/main.orni"), source).map_err(|error| error.to_string())?;
-    fs::write(root.join("src/services/health.orni"), HEALTH_TEMPLATE)
+    fs::write(root.join("src/main.orni"), MAIN_TEMPLATE).map_err(|error| error.to_string())?;
+    fs::write(root.join("src/app/application.orni"), APPLICATION_TEMPLATE)
         .map_err(|error| error.to_string())?;
+    fs::write(root.join("src/app/config.orni"), CONFIG_TEMPLATE)
+        .map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("src/app/routes.orni"),
+        if empty {
+            EMPTY_ROUTES_TEMPLATE
+        } else {
+            CRUD_ROUTES_TEMPLATE
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("src/features/health/api.orni"),
+        HEALTH_API_TEMPLATE,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
+        root.join("src/features/health/route.orni"),
+        HEALTH_ROUTE_TEMPLATE,
+    )
+    .map_err(|error| error.to_string())?;
+    if !empty {
+        fs::write(
+            root.join("src/features/users/data.orni"),
+            USERS_DATA_TEMPLATE,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(root.join("src/features/users/api.orni"), USERS_API_TEMPLATE)
+            .map_err(|error| error.to_string())?;
+        fs::write(
+            root.join("src/features/users/route.orni"),
+            USERS_ROUTE_TEMPLATE,
+        )
+        .map_err(|error| error.to_string())?;
+    }
     fs::write(root.join("tests/health.orni"), TEST_TEMPLATE).map_err(|error| error.to_string())?;
     fs::write(
         root.join("README.md"),
-        "# Orni project\n\nRun `orni dev` from this directory. Run `orni test` to execute files in `tests`. Test reusable modules such as `src/services/health.orni`; do not import `src/main.orni`, because it is the application entry point.\n",
+        "# Orni project\n\nRun `orni dev` from this directory. `src/main.orni` starts the application root, `src/app` composes configuration and features, and `src/features` owns HTTP behavior by domain. Open `http://127.0.0.1:3000/health` to confirm the local API is running. Run `orni test` to execute files in `tests`. API tests use `api.status(method, path, body?)` and `api.body(method, path, body?)` to call application routes in memory; do not import `src/main.orni`.\n",
     )
     .map_err(|error| error.to_string())?;
     Ok(format!(
@@ -292,80 +356,77 @@ fn create_project(name: &str, empty: bool) -> Result<String, String> {
     ))
 }
 
-const EMPTY_TEMPLATE: &str = r#"import services.health.{health};
+const MAIN_TEMPLATE: &str = r#"import app.application as App;
 
-/// Runs once before the development server starts.
+/// Starts the application composition root.
 func main() -> unit {
+    App.run();
+}
+"#;
+
+const APPLICATION_TEMPLATE: &str = r#"import app.config as Config;
+import app.routes;
+
+/// Composes configuration and every enabled application feature.
+func run() -> unit {
+    Config.configure();
+}
+"#;
+
+const CONFIG_TEMPLATE: &str = r#"/// Configures the application before the HTTP server starts.
+func configure() -> unit {
     app.name("Orni API");
     app.port(3000);
     print "Starting Orni API";
 }
+"#;
+
+const EMPTY_ROUTES_TEMPLATE: &str = r#"import features.health.route;
+"#;
+
+const CRUD_ROUTES_TEMPLATE: &str = r#"import features.health.route;
+import features.users.route;
+"#;
+
+const HEALTH_API_TEMPLATE: &str = r#"/// Confirms that the local API is running.
+func health() -> string {
+    return "OK";
+}
+"#;
+
+const HEALTH_ROUTE_TEMPLATE: &str = r#"import features.health.api.{health};
 
 route get "/health" => health;
 "#;
 
-const CRUD_TEMPLATE: &str = r#"import services.health.{health};
-
-/// Runs once before the development server starts.
-func main() -> unit {
-    app.name("Orni API");
-    app.port(3000);
-    print "Starting Orni API";
-}
-
-/// Describes a stored user.
-model User {
-    id: uuid;
-    name: string<80>;
-    email: string<254>;
-}
+const USERS_DATA_TEMPLATE: &str = r#"/// Describes a stored user.
+model User { id: uuid; name: string<80>; email: string<254>; }
 
 /// Defines the fields a client supplies when creating a user.
-model CreateUser {
-    name: string<80>;
-    email: string<254>;
-}
+model CreateUser { name: string<80>; email: string<254>; }
 
 /// Defines the fields a client supplies when replacing a user.
-model UpdateUser {
-    name: string<80>;
-    email: string<254>;
-}
+model UpdateUser { name: string<80>; email: string<254>; }
 
 /// Defines the fields a client can supply when partially updating a user.
-model PatchUser {
-    name: string<80>;
-    email: string<254>;
-}
+model PatchUser { name: string<80>; email: string<254>; }
 
 store users: User;
+"#;
 
-func list_users() -> response {
-    return users.list();
-}
+const USERS_API_TEMPLATE: &str = r#"import features.users.data.{CreateUser, PatchUser, UpdateUser, users};
 
-func create_user(input: CreateUser) -> response {
-    return users.create(input);
-}
+func list_users() -> response { return users.list(); }
+func create_user(input: CreateUser) -> response { return users.create(input); }
+func get_user(id: uuid) -> response { return users.find(id); }
+func update_user(id: uuid, input: UpdateUser) -> response { return users.replace(id, input); }
+func patch_user(id: uuid, input: PatchUser) -> response { return users.patch(id, input); }
+func delete_user(id: uuid) -> response { return users.delete(id); }
+"#;
 
-func get_user(id: uuid) -> response {
-    return users.find(id);
-}
-
-func update_user(id: uuid, input: UpdateUser) -> response {
-    return users.replace(id, input);
-}
-
-func patch_user(id: uuid, input: PatchUser) -> response {
-    return users.patch(id, input);
-}
-
-func delete_user(id: uuid) -> response {
-    return users.delete(id);
-}
+const USERS_ROUTE_TEMPLATE: &str = r#"import features.users.api.{create_user, delete_user, get_user, list_users, patch_user, update_user};
 
 route post "/users" => create_user;
-route get "/health" => health;
 route get "/users" => list_users;
 route get "/users/:id" => get_user;
 route put "/users/:id" => update_user;
@@ -373,21 +434,16 @@ route patch "/users/:id" => patch_user;
 route delete "/users/:id" => delete_user;
 "#;
 
-const HEALTH_TEMPLATE: &str = r#"/// Confirms that the local API is running.
-func health() -> string {
-    return "OK";
+const TEST_TEMPLATE: &str = r#"// Runs against the application routes without starting a server.
+test "health endpoint is available" {
+    assert api.status("GET", "/health") == 200;
+    assert api.body("GET", "/health") == "OK";
 }
-"#;
-
-const TEST_TEMPLATE: &str = r#"import services.health.{health};
-
-/// A basic example of an Orni test.
-assert health() == "OK";
 "#;
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, HEALTH_TEMPLATE, parse_command, portable_path};
+    use super::{Command, HEALTH_API_TEMPLATE, parse_command, portable_path};
 
     fn arguments(values: &[&str]) -> Vec<String> {
         values.iter().map(ToString::to_string).collect()
@@ -448,7 +504,7 @@ mod tests {
             parse_command(&arguments(&["test", "my_api"])),
             Some(Command::Test("my_api"))
         );
-        orni::check(HEALTH_TEMPLATE).expect("the reusable health module should compile");
+        orni::check(HEALTH_API_TEMPLATE).expect("the reusable health module should compile");
     }
 
     #[test]

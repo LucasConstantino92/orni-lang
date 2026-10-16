@@ -2,8 +2,9 @@
   "name": "orni-language",
   "displayName": "Orni Language",
   "description": "Language support for the Orni programming language.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "publisher": "orni-lang",
+  "icon": "icons/orni-file.png",
   "license": "MIT",
   "repository": {
     "type": "git",

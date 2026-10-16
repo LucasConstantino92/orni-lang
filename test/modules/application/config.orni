@@ -1,0 +1,4 @@
+func configure() -> unit {
+    app.name("Modular Orni API");
+    app.port(3100);
+}

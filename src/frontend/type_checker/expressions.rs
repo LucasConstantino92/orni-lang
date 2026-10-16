@@ -121,6 +121,42 @@ impl TypeChecker {
             );
         };
         let name = identifier_name(name_token);
+        if matches!(name, "api.status" | "api.body" | "api.contains") {
+            let valid_arity = if name == "api.contains" {
+                (3..=4).contains(&arguments.len())
+            } else {
+                (2..=3).contains(&arguments.len())
+            };
+            if !valid_arity {
+                let expected = if name == "api.contains" {
+                    "3 or 4"
+                } else {
+                    "2 or 3"
+                };
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects {expected} argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            for argument in arguments {
+                if !matches!(self.expression_type(argument)?, TypeName::String(_)) {
+                    return Err(semantic_error(
+                        name_token,
+                        "api request method, path, and body must be strings",
+                    )
+                    .with_code("ORNI-E107"));
+                }
+            }
+            return Ok(match name {
+                "api.status" => TypeName::Integer(crate::syntax::IntegerType::Int64),
+                "api.body" => TypeName::String(None),
+                _ => TypeName::Bool,
+            });
+        }
         if matches!(name, "app.name" | "app.port") {
             if arguments.len() != 1 {
                 return Err(semantic_error(
@@ -146,7 +182,15 @@ impl TypeChecker {
         }
         if matches!(
             name,
-            "response.ok" | "response.created" | "response.not_found" | "response.bad_request"
+            "response.ok"
+                | "response.created"
+                | "response.not_found"
+                | "response.bad_request"
+                | "response.unauthorized"
+                | "response.forbidden"
+                | "response.conflict"
+                | "response.internal_error"
+                | "response.redirect"
         ) {
             if arguments.len() != 1 {
                 return Err(semantic_error(
@@ -178,13 +222,65 @@ impl TypeChecker {
             }
             return Ok(TypeName::Response);
         }
-        if let Some((store, operation)) = name.split_once('.')
+        if name == "response.header" {
+            if arguments.len() != 3 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "function 'response.header' expects 3 argument(s)",
+                )
+                .with_code("ORNI-E108"));
+            }
+            let response_type = self.expression_type(&arguments[0])?;
+            self.require_type(
+                name_token,
+                TypeName::Response,
+                response_type,
+                "first argument",
+            )?;
+            for argument in &arguments[1..] {
+                if !matches!(self.expression_type(argument)?, TypeName::String(_)) {
+                    return Err(semantic_error(
+                        name_token,
+                        "response.header requires string header names and values",
+                    )
+                    .with_code("ORNI-E107"));
+                }
+            }
+            return Ok(TypeName::Response);
+        }
+        if let Some((store, operation)) = name.rsplit_once('.')
             && let Some(model) = self.stores.get(store).cloned()
         {
             let expected = match operation {
                 "create" => vec![TypeName::Model(model.clone())],
                 "find" | "delete" => vec![TypeName::Uuid],
-                "list" => vec![],
+                "list" => {
+                    if arguments.is_empty() {
+                        return Ok(TypeName::Response);
+                    }
+                    match arguments.len() {
+                        2 => vec![
+                            TypeName::Integer(crate::syntax::IntegerType::UInt32),
+                            TypeName::Integer(crate::syntax::IntegerType::UInt16),
+                        ],
+                        4 => vec![
+                            TypeName::Integer(crate::syntax::IntegerType::UInt32),
+                            TypeName::Integer(crate::syntax::IntegerType::UInt16),
+                            TypeName::String(None),
+                            TypeName::String(None),
+                        ],
+                        _ => {
+                            return Err(semantic_error(
+                                closing_parenthesis,
+                                &format!(
+                                    "store operation '{name}' expects 0, 2, or 4 argument(s), but received {}",
+                                    arguments.len()
+                                ),
+                            )
+                            .with_code("ORNI-E108"));
+                        }
+                    }
+                }
                 "replace" | "patch" => vec![TypeName::Uuid, TypeName::Model(model.clone())],
                 _ => {
                     return Err(semantic_error(

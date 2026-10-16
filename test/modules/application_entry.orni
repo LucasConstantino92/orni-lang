@@ -1,0 +1,5 @@
+import application.root as App;
+
+func main() -> unit {
+    App.run();
+}

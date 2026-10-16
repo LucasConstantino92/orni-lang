@@ -1,0 +1,12 @@
+model User {
+    id: uuid;
+    name: string<80>;
+}
+
+store users: User;
+
+func list_users() -> response {
+    return users.list();
+}
+
+route get "/users" => list_users;

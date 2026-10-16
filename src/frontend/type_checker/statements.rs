@@ -519,6 +519,7 @@ impl TypeChecker {
                 }
                 let parameters = route_parameters(path_value)
                     .map_err(|message| semantic_error(path, &message).with_code("ORNI-E152"))?;
+                let route_parameter_count = parameters.len();
                 let pattern = format!("{:?}:{}", method.kind, route_pattern(path_value));
                 if !self.routes.insert(pattern) {
                     return Err(semantic_error(
@@ -569,19 +570,21 @@ impl TypeChecker {
                     )
                     .with_code("ORNI-E152"));
                 }
-                let path_parameters = if has_body {
+                let handler_path_parameters = if has_body {
                     function.parameters.len().saturating_sub(1)
                 } else {
                     function.parameters.len()
                 };
-                if path_parameters != parameters.len() {
+                if (has_body && handler_path_parameters != route_parameter_count)
+                    || (!has_body && handler_path_parameters < route_parameter_count)
+                {
                     return Err(semantic_error(
                         keyword,
                         &format!(
                             "route declares {} path parameter(s), but handler '{}' accepts {}",
-                            parameters.len(),
+                            route_parameter_count,
                             identifier_name(handler),
-                            path_parameters,
+                            handler_path_parameters,
                         ),
                     )
                     .with_code("ORNI-E152"));
@@ -589,7 +592,7 @@ impl TypeChecker {
                 for (parameter, path_parameter) in function
                     .parameters
                     .iter()
-                    .take(path_parameters)
+                    .take(route_parameter_count)
                     .zip(parameters)
                 {
                     if !matches!(
@@ -616,6 +619,25 @@ impl TypeChecker {
                             ),
                         )
                         .with_code("ORNI-E152"));
+                    }
+                }
+                if !has_body {
+                    for parameter in function.parameters.iter().skip(route_parameter_count) {
+                        if !matches!(
+                            parameter.type_name,
+                            TypeName::String(_)
+                                | TypeName::Integer(_)
+                                | TypeName::Double
+                                | TypeName::Bool
+                                | TypeName::Char
+                                | TypeName::Uuid
+                        ) {
+                            return Err(semantic_error(
+                                &parameter.name,
+                                "GET query parameters must use string, integer, double, bool, char, or uuid types",
+                            )
+                            .with_code("ORNI-E152"));
+                        }
                     }
                 }
             }
@@ -731,6 +753,12 @@ impl TypeChecker {
             Statement::Block(statements) => {
                 self.scopes.push(HashMap::new());
                 let result = self.check_statements(statements);
+                self.scopes.pop();
+                result?;
+            }
+            Statement::Test { body, .. } => {
+                self.scopes.push(HashMap::new());
+                let result = self.check_statements(body);
                 self.scopes.pop();
                 result?;
             }
@@ -892,6 +920,7 @@ fn statements_request_contract(statements: &[Statement], contract: &str) -> bool
                 })
         }
         Statement::Block(statements) => statements_request_contract(statements, contract),
+        Statement::Test { body, .. } => statements_request_contract(body, contract),
         Statement::Import { .. }
         | Statement::Model { .. }
         | Statement::Store { .. }

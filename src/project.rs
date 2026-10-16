@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::HttpLimits;
 use crate::{ExecutionLimits, OrniError};
 
 /// Paths and runtime settings declared by the nearest `orni.toml` manifest.
@@ -18,6 +20,9 @@ pub struct Project {
     pub entry: PathBuf,
     /// Resource boundaries applied by the command line runner.
     pub runtime: ExecutionLimits,
+    /// Native HTTP boundaries declared by the project manifest.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub http: HttpLimits,
 }
 
 impl Project {
@@ -62,7 +67,7 @@ impl Project {
             .map_err(|e| error(format!("invalid project manifest: {e}")))?;
         let value = document.as_table();
         for (key, _) in value.iter() {
-            if !matches!(key, "project" | "runtime") {
+            if !matches!(key, "project" | "runtime" | "http") {
                 return Err(error(format!("unknown manifest section '{key}'")));
             }
         }
@@ -150,11 +155,42 @@ impl Project {
                 *target = number;
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut http = HttpLimits::default();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(settings) = value.get("http") {
+            let settings = settings
+                .as_table()
+                .ok_or_else(|| error("http must be a table".into()))?;
+            for (key, value) in settings {
+                let number = value
+                    .as_integer()
+                    .and_then(|number| usize::try_from(number).ok())
+                    .filter(|number| *number > 0)
+                    .ok_or_else(|| error(format!("http.{key} must be a positive integer")))?;
+                match key {
+                    "connection_timeout_seconds" => http.connection_timeout_seconds = number as u64,
+                    "max_connections" => http.max_connections = number,
+                    "max_connections_per_ip" => http.max_connections_per_ip = number,
+                    "max_requests_per_connection" => http.max_requests_per_connection = number,
+                    "max_requests_per_ip" => http.max_requests_per_ip = number,
+                    "request_window_seconds" => http.request_window_seconds = number as u64,
+                    _ => return Err(error(format!("unknown http setting '{key}'"))),
+                }
+            }
+            if http.max_connections_per_ip > http.max_connections {
+                return Err(error(
+                    "http.max_connections_per_ip cannot exceed http.max_connections".into(),
+                ));
+            }
+        }
         Ok(Self {
             root: root.to_path_buf(),
             source,
             entry,
             runtime,
+            #[cfg(not(target_arch = "wasm32"))]
+            http,
         })
     }
 }

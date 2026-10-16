@@ -227,22 +227,55 @@ cd my_api
 orni dev
 ```
 
-`orni new my_api --empty` creates only a `main.orni`, manifest, `/health`
-route, and one sample test in `tests/`. Both templates use an optional Dart-like
-entry point:
+`orni new my_api --empty` creates an application root, manifest, `/health`
+feature, and one sample test in `tests/`. Both templates use an optional
+Dart-like entry point:
 
 ```orni
+import app.application as App;
+
 func main() -> unit {
-    app.name("Orni API");
-    app.port(3000);
-    print "Starting Orni API";
+    App.run();
 }
 ```
 
 When present, `main` is the application entry point. It must use the signature
 `func main() -> unit`; `orni run` executes it after top-level statements, while
 `orni dev` and `orni serve` execute it once before starting the local server.
-HTTP routes remain top-level declarations.
+HTTP routes remain declarative top-level declarations, but they can live in an
+imported feature module. This keeps the entry point small while preserving
+static validation and navigation to every route handler.
+
+### Application composition
+
+New projects use `src/main.orni` only to start the application root. The root
+in `src/app/application.orni` composes configuration and the route registry;
+feature folders own their API, data, route, and future backend modules.
+
+```text
+src/
+  main.orni
+  app/
+    application.orni
+    config.orni
+    routes.orni
+  features/
+    health/
+      api.orni
+      route.orni
+```
+
+`src/app/routes.orni` imports each enabled feature route module. Adding a new
+feature changes that registry, never `main.orni`:
+
+```orni
+import features.health.route;
+import features.users.route;
+```
+
+Feature route modules declare their own HTTP routes and import only their
+feature API. Models and stores may also be declared in imported modules, so a
+larger feature can keep data and route concerns together under `src/features`.
 
 `app.name(...)` controls the startup label and `app.port(...)` changes the local
 server port. Both are optional; the default address is `127.0.0.1:3000`.
@@ -290,7 +323,12 @@ The CLI applies runtime settings from the manifest; an embedding application's
 explicit `run_file_with_limits` settings take precedence.
 
 The experimental HTTP preview supports top-level GET, POST, PUT, PATCH, and DELETE routes. GET
-handlers may return a string or an explicit `response`; POST handlers receive
+handlers may return a string or an explicit `response`. Its parameters first bind
+to `:path` segments, then to query string values with the same name. Query
+parameters with defaults are optional; parameters without defaults are required.
+They support `string`, integer types, `double`, `bool`, `char`, and `uuid`, are
+percent-decoded safely, and reject invalid, duplicate, or unexpected values with
+`400 Bad Request` before the handler runs. POST handlers receive
 one model body as their final parameter and return `response`. Route parameters
 use `:name` and are passed to matching handler parameters in URL order.
 The handler type controls safe conversion; use `int`,
@@ -299,6 +337,54 @@ needs a typed value. Invalid input returns `400 Bad Request` without calling the
 handler. `orni serve` starts a native Rust server on
 `127.0.0.1:3000`; it is not available through the WASI editor/compiler target.
 See [`examples/experimental/http_server`](examples/experimental/http_server).
+
+The native server processes connections concurrently, reuses HTTP/1.1
+connections, and keeps application stores synchronized across handlers. Each
+connection has a five-second idle read timeout, serves at most 1,000 requests,
+and the server admits up to 256 active connections; additional connections
+receive `503 Service Unavailable` with the stable `ORNI_HTTP_SERVER_BUSY` code.
+Requests are also bounded to 1 MiB of body data, 32 KiB of headers, and 64
+header fields; oversized headers receive `431 Request Header Fields Too Large`
+with `ORNI_HTTP_HEADERS_TOO_LARGE`.
+Configure these native HTTP boundaries per project when needed:
+
+```toml
+[http]
+connection_timeout_seconds = 5
+max_connections = 256
+max_connections_per_ip = 32
+max_requests_per_connection = 1000
+max_requests_per_ip = 120
+request_window_seconds = 60
+```
+
+Connections beyond the global limit receive `503`; a single address exceeding
+its configured connection share receives `429`. Every route also has a default
+per-IP request budget (`120` requests per `60` seconds); excess requests receive
+`429` with `ORNI_HTTP_RATE_LIMITED`. These controls protect server availability.
+Authentication endpoints should still add account-aware rate limits and lockout
+policies when the application introduces authentication.
+Request-by-request logs are off by default so they do not distort throughput.
+Enable them during local debugging with:
+
+```powershell
+$env:ORNI_HTTP_LOG = "1"
+orni dev
+```
+
+### Local HTTP benchmark
+
+The repository includes a dependency-free benchmark runner and a minimal Node.js
+baseline in [`examples/benchmark`](examples/benchmark). Start the Orni server,
+then run:
+
+```powershell
+node tools/http-bench.mjs http://127.0.0.1:3002/health --requests 10000 --concurrency 50 --warmup 500
+```
+
+The report includes successful responses, non-2xx responses, network failures,
+throughput, and p50/p95/p99 latency. Use the same route and command to compare
+another server fairly.
 
 ```orni
 func hello(name: string) -> string {
@@ -309,7 +395,31 @@ route get "/hello/:name" => hello;
 ```
 
 `GET /hello/Orni` responds with `Hello, Orni!`. Literal routes take precedence
-over parameterized routes. Query strings are ignored in this preview.
+over parameterized routes. A typed, paginated GET endpoint can stay equally
+small:
+
+```orni
+func list_users(page: uint32 = 1, limit: uint16 = 20) -> response {
+    return users.list(page, limit);
+}
+
+route get "/users" => list_users;
+```
+
+`GET /users?page=2&limit=50` supplies typed values to the handler. `GET /users`
+uses its defaults. A missing required parameter such as `search: string`, or an
+invalid value such as `page=70000` for `uint16`, receives `400 Bad Request`.
+`store.list()` retains its simple array response. `store.list(page, limit)`
+uses `page: uint32` and `limit: uint16`, limits each response to 100 items, and
+returns a JSON object with `data`, `page`, `limit`, `total`, and `total_pages`.
+Pass `sort` and `direction` as the third and fourth arguments to sort by a
+declared model field before pagination; direction is `asc` or `desc`.
+
+API tests can assert relevant JSON fragments without depending on generated UUIDs:
+
+```orni
+assert api.contains("GET", "/users?page=1&limit=20", "\"total\":3");
+```
 
 For a complete in-memory CRUD endpoint, declare a model with `id: uuid` and a
 `store`. Missing or extra fields, invalid field types, oversized strings, and
@@ -354,7 +464,33 @@ fields are changed, and an empty object is rejected.
 Store operations also include `list`, which returns every retained model as a
 JSON array. Route handlers can produce explicit business responses with
 `response.ok(body)`, `response.created(body)`, `response.bad_request(body)`,
-`response.not_found(body)`, or `response.no_content()`.
+`response.unauthorized(body)`, `response.forbidden(body)`,
+`response.not_found(body)`, `response.conflict(body)`,
+`response.internal_error(body)`, or `response.no_content()`.
+
+`response.redirect(url)` returns `302 Found` with a `Location` header. The
+starter project uses it at `/` to open the Orni README until the application
+owner replaces that route.
+
+Use `response.header(response, name, value)` to set a response header without
+changing its status or body. It can wrap any response helper or CRUD store
+operation; setting the same header again replaces its earlier value.
+
+```orni
+func health() -> response {
+    return response.header(
+        response.ok("OK"),
+        "Cache-Control",
+        "no-store"
+    );
+}
+
+route get "/health" => health;
+```
+
+`Content-Type` can be customized. HTTP framing headers (`Connection`,
+`Content-Length`, and `Transfer-Encoding`) are protected by the runtime, and
+header names and values are validated before a response is written.
 
 ```orni
 func user(id: uint16) -> string {
@@ -366,6 +502,43 @@ route get "/users/:id" => user;
 
 `GET /users/42` calls `user` with an actual `uint16`; `/users/70000` returns
 `400 Bad Request` because the value cannot fit in that type.
+
+### HTTP error responses
+
+Every error created by the HTTP runtime and every `response.bad_request(...)`
+or other error response helper uses the same JSON envelope:
+
+```json
+{
+  "error": {
+    "status": 400,
+    "code": "ORNI_HTTP_INVALID_BODY",
+    "message": "missing required JSON field 'email'"
+  }
+}
+```
+
+`code` is stable for clients and tests, while `message` gives a practical
+explanation for people. The current runtime reports `400` for malformed input,
+`404` for missing routes or resources, `405` for an unsupported method, `409`
+for conflicts, and `500` for unexpected handler failures. A `405` response also
+includes the standard `Allow` header listing accepted methods.
+
+When a JSON body fails model validation, the envelope includes `details` keyed
+by the field when Orni can identify it:
+
+```json
+{
+  "error": {
+    "status": 400,
+    "code": "ORNI_HTTP_INVALID_BODY",
+    "message": "Invalid JSON field 'name': expected string<80>",
+    "details": {
+      "name": "Invalid JSON field 'name': expected string<80>"
+    }
+  }
+}
+```
 
 ```orni
 contract Clock {

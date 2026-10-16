@@ -113,6 +113,14 @@ route get "/users/:id" => user;
 Use `uuid` when identifiers are generated outside the application. Orni
 validates the UUID before the handler runs, just like integer ranges.
 
+## HTTP error responses
+
+[`http_errors.orni`](http_errors.orni) exposes the standard API error
+responses. Run it with the same `cargo run -- serve` command and open, for
+example, `http://127.0.0.1:3000/errors/401`. Each response has a stable code
+for clients and a human-readable message. The development server also prints
+the method, path, status, and duration for every request.
+
 Run the contracts and providers example from the repository root:
 
 ```sh

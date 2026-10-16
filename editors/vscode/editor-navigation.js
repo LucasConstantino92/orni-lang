@@ -17,8 +17,12 @@ async function definitionFor(document, position) {
 
   const source = document.getText();
   const usageOffset = document.offsetAt(position);
+  const symbolOffset = document.offsetAt(symbol.range.start);
   const backendDefinition = await backendDefinitionFor(
-    storeOperationAt(source, usageOffset, symbol.name) || symbol.name,
+    storeOperationAt(source, symbolOffset, symbol.name) ||
+      responseOperationAt(source, symbolOffset, symbol.name) ||
+      apiOperationAt(source, symbolOffset, symbol.name) ||
+      symbol.name,
   );
   if (backendDefinition) return backendDefinition;
 
@@ -107,6 +111,27 @@ function storeOperationAt(source, usageOffset, symbolName) {
   return /[A-Za-z_][A-Za-z0-9_]*\s*\.\s*$/.test(before)
     ? `store.${symbolName}`
     : undefined;
+}
+
+/** Returns the native implementation key for a response helper under the cursor. */
+function responseOperationAt(source, usageOffset, symbolName) {
+  if (!new Set([
+    "ok", "created", "not_found", "bad_request", "unauthorized", "forbidden",
+    "conflict", "internal_error", "redirect", "no_content", "header",
+  ]).has(symbolName)) {
+    return undefined;
+  }
+  const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
+  return /response\s*\.\s*$/.test(before)
+    ? `response.${symbolName}`
+    : undefined;
+}
+
+/** Returns the native implementation key for an API test helper under the cursor. */
+function apiOperationAt(source, usageOffset, symbolName) {
+  if (!new Set(["status", "body", "contains"]).has(symbolName)) return undefined;
+  const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
+  return /api\s*\.\s*$/.test(before) ? `api.${symbolName}` : undefined;
 }
 
 /** Resolves one public member inside the module named by an import. */

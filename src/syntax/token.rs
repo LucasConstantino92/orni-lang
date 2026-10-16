@@ -93,6 +93,8 @@ pub(crate) enum TokenKind {
     Print,
     /// The `assert` keyword used by test files.
     Assert,
+    /// The `test` keyword for a named test scenario.
+    Test,
     /// The `return` keyword.
     Return,
     /// The `if` keyword.

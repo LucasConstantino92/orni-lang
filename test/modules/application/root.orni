@@ -1,0 +1,6 @@
+import application.config as Config;
+import application.routes;
+
+func run() -> unit {
+    Config.configure();
+}

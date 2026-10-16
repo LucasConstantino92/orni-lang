@@ -1,0 +1,33 @@
+// Run with: cargo run -- serve examples/experimental/http_errors.orni
+// Visit each route to inspect the stable JSON error contract.
+
+func invalid_input() -> response {
+    return response.bad_request("The submitted user data is invalid");
+}
+
+func sign_in_required() -> response {
+    return response.unauthorized("Sign in before accessing this resource");
+}
+
+func access_denied() -> response {
+    return response.forbidden("Your account cannot access this resource");
+}
+
+func duplicate_user() -> response {
+    return response.conflict("A user with this email already exists");
+}
+
+func missing_user() -> response {
+    return response.not_found("The requested user does not exist");
+}
+
+func unexpected_failure() -> response {
+    return response.internal_error("The service could not complete the request");
+}
+
+route get "/errors/400" => invalid_input;
+route get "/errors/401" => sign_in_required;
+route get "/errors/403" => access_denied;
+route get "/errors/409" => duplicate_user;
+route get "/errors/404" => missing_user;
+route get "/errors/500" => unexpected_failure;

@@ -1,0 +1,12 @@
+/// Configures the isolated local server used by the HTTP benchmark.
+func main() -> unit {
+    app.name("Orni benchmark");
+    app.port(3002);
+}
+
+/// Returns the same small response as the Node.js comparison server.
+func health() -> string {
+    return "OK";
+}
+
+route get "/health" => health;

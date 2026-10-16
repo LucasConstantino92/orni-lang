@@ -44,6 +44,11 @@ class DependencyIndex {
     return affected;
   }
 
+  /** Returns whether another indexed file imports this file as a module. */
+  hasImporters(file) {
+    return Boolean(this.importers.get(file)?.size);
+  }
+
   /** Returns a cycle-safe graph identity, including absent imported files. */
   snapshot(entry) {
     const files = new Set([entry]);

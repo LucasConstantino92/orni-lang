@@ -4,6 +4,39 @@ All notable changes to Orni are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] - Unreleased
+
+### Added
+
+- Typed GET query parameters that bind to handler parameters after URL path parameters.
+- Optional query parameters through normal function defaults, with support for `string`, integer types, `double`, `bool`, `char`, and `uuid`.
+- Safe query percent-decoding plus clear `400 Bad Request` responses for missing, invalid, duplicate, or unexpected values.
+- Paginated `store.list(page, limit)` responses with bounded page sizes and JSON metadata.
+- Optional model-field sorting for paginated lists and configurable native HTTP connection limits.
+- `api.contains(...)` for concise assertions against JSON response fragments.
+- Default configurable per-IP HTTP request rate limiting for every route.
+- Detailed editor hover documentation for `get`, including query parameter behavior and an executable example.
+
+## [0.9.0] - 2026-10-15
+
+### Added
+
+- The first local HTTP application workflow with `orni new`, `orni dev`, and `orni serve`.
+- Project scaffolding with `orni.toml`, a `src/` entry point, a health route, and executable test files.
+- Optional Dart-like application startup through `func main() -> unit` with `app.name(...)` and `app.port(...)` configuration.
+- Typed HTTP routes for `GET`, `POST`, `PUT`, `PATCH`, and `DELETE`.
+- Typed `model` declarations, JSON request-body validation, and model-backed HTTP responses.
+- In-memory `store` CRUD operations: `list`, `create`, `find`, `replace`, `patch`, and `delete`.
+- UUID support for route parameters and default CRUD resource identifiers.
+- `orni test` with in-memory `api.status(...)` and `api.body(...)` route assertions.
+- HTTP-aware editor syntax, hovers, signatures, navigation, start/stop/restart commands, and project actions.
+- Structured HTTP diagnostics and runtime errors for invalid routes, request bodies, path parameters, and server startup.
+
+### Changed
+
+- The README and experimental examples now present Orni as a server framework with a focused language and Rust runtime.
+- The compiler, parser, type checker, runtime, CLI, and editor now share the application and HTTP model required by `.orni` projects.
+
 ## [0.8.0] - 2026-10-14
 
 ### Added
@@ -60,3 +93,4 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 [0.7.6]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.7.6
 [0.8.0]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.8.0
+[0.9.0]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.0

@@ -61,6 +61,22 @@ impl Parser {
                 expression,
             });
         }
+        if self.matches(|kind| matches!(kind, TokenKind::Test)) {
+            let keyword = self.previous().clone();
+            let name = self.consume(
+                |kind| matches!(kind, TokenKind::String(_)),
+                "expected a quoted test name after 'test'",
+            )?;
+            self.consume(
+                |kind| matches!(kind, TokenKind::LeftBrace),
+                "expected '{' before the test body",
+            )?;
+            return Ok(Statement::Test {
+                keyword,
+                name,
+                body: self.block()?,
+            });
+        }
         if self.matches(|kind| matches!(kind, TokenKind::Return)) {
             return self.return_statement();
         }

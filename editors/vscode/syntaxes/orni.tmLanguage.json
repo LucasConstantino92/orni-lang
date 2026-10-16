@@ -117,7 +117,7 @@
       "patterns": [
         {
           "name": "keyword.control.orni",
-          "match": "\\b(?:if|else|return|assert|import|as|for|bind|to|route|get|post|put|patch|delete)\\b"
+          "match": "\\b(?:if|else|return|assert|test|import|as|for|bind|to|route|get|post|put|patch|delete)\\b"
         },
         {
           "name": "storage.type.orni",

@@ -10,6 +10,9 @@ test("indexes a thousand files but invalidates only transitive importers", () =>
   index.set("module0", "import module1;", ["module1"]);
   assert.deepEqual([...index.affected(["module1"])].sort(), ["main", "module0", "module1"]);
   assert.equal(index.snapshot("main").files.size, 3);
+  assert.equal(index.hasImporters("module0"), true);
+  assert.equal(index.hasImporters("module999"), true);
+  assert.equal(index.hasImporters("other"), false);
 });
 
 test("unrelated edits and repeated identical buffers preserve the graph cache identity", () => {

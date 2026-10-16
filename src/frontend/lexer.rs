@@ -286,6 +286,7 @@ impl Lexer {
             "as" => TokenKind::As,
             "print" => TokenKind::Print,
             "assert" => TokenKind::Assert,
+            "test" => TokenKind::Test,
             "return" => TokenKind::Return,
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
