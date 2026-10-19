@@ -8,7 +8,7 @@ use crate::syntax::Value;
 use super::BodyValidationError;
 
 /// A fully formed HTTP response, including its representation type.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::runtime) struct HttpResponse {
     pub(super) status: u16,
     pub(super) content_type: String,
@@ -81,25 +81,17 @@ impl HttpResponse {
 
 /// Selects a status and serializes the route value at the HTTP boundary.
 pub(super) fn response_value(value: Value) -> HttpResponse {
-    let (status, body, headers) = match value {
+    let (status, body, headers, json_envelope) = match value {
         Value::Response {
             status,
             body,
             headers,
-        } => (status, *body, headers),
-        body => (200, body, Vec::new()),
+            json_envelope,
+        } => (status, *body, headers, json_envelope),
+        body => (200, body, Vec::new(), false),
     };
-    let response = match body {
-        Value::String(location) if status == 302 => {
-            HttpResponse::text(302, "Redirecting to documentation.")
-                .with_header("Location", location.to_string())
-        }
-        Value::String(body) if status >= 400 => {
-            HttpResponse::error(status, response_error_code(status), body.to_string())
-        }
-        Value::String(body) => HttpResponse::text(status, body.to_string()),
-        Value::Unit if status == 204 => HttpResponse::text(status, ""),
-        Value::Model { .. } | Value::List(_) => match serde_json::to_string(&model_json(&body)) {
+    let response = if json_envelope {
+        match serde_json::to_string(&serde_json::json!({ "data": model_json(&body) })) {
             Ok(body) => HttpResponse {
                 status,
                 content_type: "application/json; charset=utf-8".to_owned(),
@@ -107,8 +99,57 @@ pub(super) fn response_value(value: Value) -> HttpResponse {
                 body,
             },
             Err(_) => HttpResponse::error(500, "ORNI_HTTP_INTERNAL_ERROR", "Internal Server Error"),
-        },
-        _ => HttpResponse::error(500, "ORNI_HTTP_INTERNAL_ERROR", "Internal Server Error"),
+        }
+    } else {
+        match body {
+            Value::String(location) if status == 302 => {
+                HttpResponse::text(302, "Redirecting to documentation.")
+                    .with_header("Location", location.to_string())
+            }
+            Value::String(body) if status >= 400 => {
+                HttpResponse::error(status, response_error_code(status), body.to_string())
+            }
+            Value::String(body) => HttpResponse::text(status, body.to_string()),
+            Value::Unit if status == 204 => HttpResponse::text(status, ""),
+            Value::Collection { data, meta } => {
+                let meta = meta
+                    .iter()
+                    .map(|(name, value)| (name.clone(), model_json(value)))
+                    .collect::<serde_json::Map<_, _>>();
+                match serde_json::to_string(&serde_json::json!({
+                    "data": model_json(&data),
+                    "meta": meta,
+                })) {
+                    Ok(body) => HttpResponse {
+                        status,
+                        content_type: "application/json; charset=utf-8".to_owned(),
+                        headers: Vec::new(),
+                        body,
+                    },
+                    Err(_) => HttpResponse::error(
+                        500,
+                        "ORNI_HTTP_INTERNAL_ERROR",
+                        "Internal Server Error",
+                    ),
+                }
+            }
+            Value::Model { .. } | Value::List(_) => {
+                match serde_json::to_string(&model_json(&body)) {
+                    Ok(body) => HttpResponse {
+                        status,
+                        content_type: "application/json; charset=utf-8".to_owned(),
+                        headers: Vec::new(),
+                        body,
+                    },
+                    Err(_) => HttpResponse::error(
+                        500,
+                        "ORNI_HTTP_INTERNAL_ERROR",
+                        "Internal Server Error",
+                    ),
+                }
+            }
+            _ => HttpResponse::error(500, "ORNI_HTTP_INTERNAL_ERROR", "Internal Server Error"),
+        }
     };
     headers
         .into_iter()
@@ -150,6 +191,13 @@ fn model_json(value: &Value) -> serde_json::Value {
                 .collect(),
         ),
         Value::List(values) => serde_json::Value::Array(values.iter().map(model_json).collect()),
+        Value::Collection { data, meta } => serde_json::json!({
+            "data": model_json(data),
+            "meta": meta
+                .iter()
+                .map(|(name, value)| (name.clone(), model_json(value)))
+                .collect::<serde_json::Map<_, _>>(),
+        }),
         Value::Unit | Value::Response { .. } | Value::Provider { .. } => serde_json::Value::Null,
     }
 }

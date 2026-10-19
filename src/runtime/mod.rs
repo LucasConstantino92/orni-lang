@@ -22,6 +22,8 @@ pub(crate) use http::serve;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use http::{ApiTestContext, api_test_context, api_test_request};
 pub(crate) use interpreter::Interpreter;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use interpreter::RouteProtection;
 pub use limits::ExecutionLimits;
 
 /// Native HTTP server boundaries that protect local application availability.
@@ -40,6 +42,10 @@ pub struct HttpLimits {
     pub max_requests_per_ip: usize,
     /// Fixed request-rate window duration, in seconds.
     pub request_window_seconds: u64,
+    /// Lifetime of one cached successful GET response, in seconds.
+    pub cache_ttl_seconds: u64,
+    /// Maximum retained successful GET responses.
+    pub max_cache_entries: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,6 +58,8 @@ impl Default for HttpLimits {
             max_requests_per_connection: 1_000,
             max_requests_per_ip: 120,
             request_window_seconds: 60,
+            cache_ttl_seconds: 15,
+            max_cache_entries: 256,
         }
     }
 }

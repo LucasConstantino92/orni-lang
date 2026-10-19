@@ -22,6 +22,7 @@ async function definitionFor(document, position) {
     storeOperationAt(source, symbolOffset, symbol.name) ||
       responseOperationAt(source, symbolOffset, symbol.name) ||
       apiOperationAt(source, symbolOffset, symbol.name) ||
+      appOperationAt(source, symbolOffset, symbol.name) ||
       symbol.name,
   );
   if (backendDefinition) return backendDefinition;
@@ -132,6 +133,13 @@ function apiOperationAt(source, usageOffset, symbolName) {
   if (!new Set(["status", "body", "contains"]).has(symbolName)) return undefined;
   const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
   return /api\s*\.\s*$/.test(before) ? `api.${symbolName}` : undefined;
+}
+
+/** Returns the native implementation key for an application helper under the cursor. */
+function appOperationAt(source, usageOffset, symbolName) {
+  if (symbolName !== "protect") return undefined;
+  const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
+  return /app\s*\.\s*$/.test(before) ? `app.${symbolName}` : undefined;
 }
 
 /** Resolves one public member inside the module named by an import. */

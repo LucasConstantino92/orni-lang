@@ -14,22 +14,22 @@ their validation and memory boundaries stay explicit:
 model User {
     id: uuid;
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email, unique;
 }
 
 model CreateUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 model UpdateUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 model PatchUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 ```
 
@@ -74,7 +74,11 @@ model User {
 store users: User;
 
 func create_user(input: CreateUser) -> response {
-    return users.create(input);
+    return response.json(users.create(input));
+}
+
+func list_users(search: string = "", limit: uint16 = 20, cursor: string = "") -> response {
+    return response.collection(users.search("name", search, limit, cursor));
 }
 
 func get_user(id: uuid) -> response { return users.find(id); }
@@ -83,6 +87,7 @@ func patch_user(id: uuid, input: PatchUser) -> response { return users.patch(id,
 func delete_user(id: uuid) -> response { return users.delete(id); }
 
 route post "/users" => create_user;
+route get "/users" => list_users;
 route get "/users/:id" => get_user;
 route put "/users/:id" => update_user;
 route patch "/users/:id" => patch_user;
@@ -95,8 +100,14 @@ Send a request while the server is running:
 curl -i -X POST http://127.0.0.1:3000/users -H "Content-Type: application/json" -d '{"name":"Orni","email":"hello@orni.dev"}'
 ```
 
-The server generates the UUID, responds with `201 Created`, and keeps the value until the server
+The server generates the UUID, responds with `201 Created` and a `Location` header, and keeps the value until the server
 stops. The remaining example handlers expose `find`, `replace`, and `delete`.
+`GET /users?search=orni&limit=20` returns a bounded collection and exposes `next_cursor`
+only when the client can request another window.
+
+The example's e-mail field uses `email, unique`, so invalid e-mail shapes return
+`400 Bad Request` and duplicate e-mails return `409 Conflict`. A client can add
+an `Idempotency-Key` header to safely retry one POST for five minutes.
 
 The `http_server` example also converts route values safely. Its `uint16`
 handler parameter accepts `/users/42`, while an out-of-range input returns

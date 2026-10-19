@@ -185,15 +185,31 @@ impl Parser {
             if !self.matches(|kind| matches!(kind, TokenKind::LeftParen)) {
                 break;
             }
-            let mut arguments = Vec::new();
-            if !matches!(self.peek().kind, TokenKind::RightParen) {
-                loop {
-                    arguments.push(self.expression()?);
-                    if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
-                        break;
+            let named_protect_arguments = matches!(
+                &expression,
+                Expression::Variable(token)
+                    if matches!(&token.kind, TokenKind::Identifier(name) if name == "app.protect")
+            ) && matches!(
+                self.peek().kind,
+                TokenKind::Identifier(_) | TokenKind::Route
+            ) && self
+                .tokens
+                .get(self.current + 1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Colon));
+            let arguments = if named_protect_arguments {
+                self.protect_arguments()?
+            } else {
+                let mut arguments = Vec::new();
+                if !matches!(self.peek().kind, TokenKind::RightParen) {
+                    loop {
+                        arguments.push(self.expression()?);
+                        if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
+                            break;
+                        }
                     }
                 }
-            }
+                arguments
+            };
             let closing_parenthesis = self.consume(
                 |kind| matches!(kind, TokenKind::RightParen),
                 "expected ')' after the arguments",
@@ -206,6 +222,55 @@ impl Parser {
         }
 
         Ok(expression)
+    }
+
+    /// Parses readable named arguments for the built-in failed-attempt guard.
+    fn protect_arguments(&mut self) -> Result<Vec<Expression>, OrniError> {
+        let mut route = None;
+        let mut attempts = None;
+        let mut seconds = None;
+        loop {
+            let label = self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_) | TokenKind::Route),
+                "expected a named protection argument",
+            )?;
+            let name = match &label.kind {
+                TokenKind::Identifier(name) => name.as_str(),
+                TokenKind::Route => "route",
+                _ => unreachable!(),
+            };
+            self.consume(
+                |kind| matches!(kind, TokenKind::Colon),
+                "expected ':' after the protection argument name",
+            )?;
+            let value = self.expression()?;
+            let target = match name {
+                "route" => &mut route,
+                "attempts" => &mut attempts,
+                "seconds" => &mut seconds,
+                _ => return Err(syntax_error(&label, "expected route, attempts, or seconds")),
+            };
+            if target.replace(value).is_some() {
+                return Err(
+                    syntax_error(&label, "protection argument is already declared")
+                        .with_code("ORNI-E116"),
+                );
+            }
+            if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+        }
+        let missing = route.is_none() || attempts.is_none() || seconds.is_none();
+        if missing {
+            return Err(
+                self.error_at_current("named app.protect requires route, attempts, and seconds")
+            );
+        }
+        Ok(vec![
+            route.expect("checked above"),
+            attempts.expect("checked above"),
+            seconds.expect("checked above"),
+        ])
     }
 
     /// Parses literals, variable names, and parenthesized expressions.

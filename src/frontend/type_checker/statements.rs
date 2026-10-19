@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     diagnostics::{OrniDiagnostic, OrniError},
-    syntax::{Parameter, Statement, Token, TokenKind, TypeName},
+    syntax::{ModelFieldRule, Parameter, Statement, Token, TokenKind, TypeName},
 };
 
 use super::{FunctionSignature, TypeChecker, identifier_name, semantic_error, statements_return};
@@ -44,6 +44,136 @@ impl TypeChecker {
                         )
                         .with_code("ORNI-E107"),
                     );
+                }
+                if field.rules.contains(&ModelFieldRule::Email)
+                    && !matches!(field.type_name, TypeName::String(_))
+                {
+                    errors.push(
+                        semantic_error(&field.name, "the 'email' rule requires a string field")
+                            .with_code("ORNI-E107"),
+                    );
+                }
+                if let Some(default) = &field.default_value {
+                    if !matches!(default, crate::syntax::Expression::Literal(_)) {
+                        errors.push(
+                            semantic_error(
+                                &field.name,
+                                "model field defaults must use literal values",
+                            )
+                            .with_code("ORNI-E107"),
+                        );
+                    } else if let Err(error) = self
+                        .require_literal_range(&field.name, &field.type_name, default)
+                        .and_then(|_| {
+                            self.expression_type(default).and_then(|actual| {
+                                self.require_type(
+                                    &field.name,
+                                    field.type_name.clone(),
+                                    actual,
+                                    "model field default",
+                                )
+                            })
+                        })
+                    {
+                        errors.push(error);
+                    }
+                }
+                let allowed_values = field.rules.iter().find_map(|rule| match rule {
+                    ModelFieldRule::OneOf(values) => Some(values),
+                    _ => None,
+                });
+                if let Some(values) = allowed_values {
+                    if !matches!(field.type_name, TypeName::String(_)) {
+                        errors.push(
+                            semantic_error(
+                                &field.name,
+                                "the 'one_of' rule requires a string field",
+                            )
+                            .with_code("ORNI-E107"),
+                        );
+                    }
+                    if let TypeName::String(Some(capacity)) = field.type_name
+                        && values.iter().any(|value| value.len() > capacity)
+                    {
+                        errors.push(
+                            semantic_error(
+                                &field.name,
+                                "'one_of' values cannot exceed the declared string capacity",
+                            )
+                            .with_code("ORNI-E106"),
+                        );
+                    }
+                }
+                let minimum = field.rules.iter().find_map(|rule| match rule {
+                    ModelFieldRule::Min(value) => Some(*value),
+                    _ => None,
+                });
+                let maximum = field.rules.iter().find_map(|rule| match rule {
+                    ModelFieldRule::Max(value) => Some(*value),
+                    _ => None,
+                });
+                if (minimum.is_some() || maximum.is_some())
+                    && !matches!(
+                        field.type_name,
+                        TypeName::String(_) | TypeName::Integer(_) | TypeName::Double
+                    )
+                {
+                    errors.push(
+                        semantic_error(
+                            &field.name,
+                            "the 'min' and 'max' rules require a string or numeric field",
+                        )
+                        .with_code("ORNI-E107"),
+                    );
+                }
+                if matches!(field.type_name, TypeName::String(_))
+                    && (minimum.is_some_and(|value| value < 0)
+                        || maximum.is_some_and(|value| value < 0))
+                {
+                    errors.push(
+                        semantic_error(
+                            &field.name,
+                            "string 'min' and 'max' rules must use non-negative byte lengths",
+                        )
+                        .with_code("ORNI-E107"),
+                    );
+                }
+                if let (Some(minimum), Some(maximum)) = (minimum, maximum)
+                    && minimum > maximum
+                {
+                    errors.push(
+                        semantic_error(
+                            &field.name,
+                            "the 'min' rule cannot be greater than the 'max' rule",
+                        )
+                        .with_code("ORNI-E107"),
+                    );
+                }
+                if let TypeName::String(Some(capacity)) = field.type_name
+                    && (minimum.is_some_and(|value| value >= 0 && value as u128 > capacity as u128)
+                        || maximum
+                            .is_some_and(|value| value >= 0 && value as u128 > capacity as u128))
+                {
+                    errors.push(
+                        semantic_error(
+                            &field.name,
+                            "string rule boundaries cannot exceed the declared string capacity",
+                        )
+                        .with_code("ORNI-E107"),
+                    );
+                }
+                if let TypeName::Integer(integer_type) = field.type_name {
+                    for boundary in [minimum, maximum].into_iter().flatten() {
+                        if !integer_type.contains(boundary) {
+                            errors.push(
+                                semantic_error(
+                                    &field.name,
+                                    "integer rule boundaries must fit the declared integer type",
+                                )
+                                .with_code("ORNI-E104"),
+                            );
+                        }
+                    }
                 }
             }
         }

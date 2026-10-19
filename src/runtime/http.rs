@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, rc::Rc};
 
-use crate::syntax::{ModelField, Statement, Token, TokenKind, TypeName, Value};
+use crate::syntax::{
+    Expression, ModelField, ModelFieldRule, Statement, Token, TokenKind, TypeName, Value,
+};
 
 use super::{ExecutionLimits, Interpreter, MemoryStore, MemoryStores};
 
@@ -256,7 +258,20 @@ pub(super) fn route_response_with_stores(
             interpreter.execute_handler_with_optional_arguments(program, &route.handler, arguments)
         };
         match result {
-            Ok(value) => response_value(value),
+            Ok(value) => {
+                let mut response = response_value(value);
+                if route.method == "POST"
+                    && route.body_model.is_some()
+                    && response.status == 201
+                    && let Some(id) = response_location_id(&response.body)
+                {
+                    response = response.with_header(
+                        "Location",
+                        format!("{}/{}", route.path.trim_end_matches('/'), id),
+                    );
+                }
+                response
+            }
             Err(error) => {
                 eprintln!("Orni route handler failed: {error}");
                 HttpResponse::error(500, "ORNI_HTTP_INTERNAL_ERROR", "Internal Server Error")
@@ -276,6 +291,24 @@ pub(super) fn route_response_with_stores(
             HttpResponse::error(404, "ORNI_HTTP_ROUTE_NOT_FOUND", "Route not found")
         }
     }
+}
+
+/// Extracts a generated resource ID from either raw or enveloped JSON output.
+fn response_location_id(body: &str) -> Option<String> {
+    let json = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    json.get("id")
+        .or_else(|| json.get("data").and_then(|data| data.get("id")))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+/// Reports whether a matching route receives a typed JSON model body.
+///
+/// The native socket layer uses this before dispatching so that a malformed
+/// media type never reaches a handler. In-memory API tests already supply the
+/// body directly and intentionally do not need to construct HTTP headers.
+pub(super) fn route_requires_json_body(method: &str, path: &str, routes: &[Route]) -> bool {
+    find_route(routes, path, Some(method)).is_some_and(|(route, _)| route.body_model.is_some())
 }
 
 /// Evaluates one request with an isolated in-memory store for unit tests.
@@ -417,6 +450,11 @@ fn parse_model_body(
     model: &ModelSchema,
     allow_missing_fields: bool,
 ) -> Result<Value, BodyValidationError> {
+    if body.trim().is_empty() {
+        return Err(BodyValidationError::general(
+            "request body is required for this route",
+        ));
+    }
     let json: serde_json::Value = serde_json::from_str(body).map_err(|error| {
         BodyValidationError::general(format!("request body is not valid JSON: {error}"))
     })?;
@@ -441,16 +479,29 @@ fn parse_model_body(
     let mut fields = BTreeMap::new();
     for field in &model.fields {
         let name = handler_name(&field.name);
-        let Some(json_value) = object.get(name) else {
-            if allow_missing_fields {
-                continue;
-            }
+        let value = if let Some(json_value) = object.get(name) {
+            parse_json_value(name, json_value, &field.type_name)
+                .map_err(|message| BodyValidationError::field(name, message))?
+        } else if !allow_missing_fields && field.default_value.is_some() {
+            model_default_value(field)
+                .map_err(|message| BodyValidationError::field(name, message))?
+        } else if allow_missing_fields || field.rules.contains(&ModelFieldRule::Optional) {
+            continue;
+        } else {
             return Err(BodyValidationError::field(
                 name,
                 format!("missing required JSON field '{name}'"),
             ));
         };
-        let value = parse_json_value(name, json_value, &field.type_name)
+        if field.rules.contains(&ModelFieldRule::Email)
+            && !matches!(&value, Value::String(value) if is_email(value))
+        {
+            return Err(BodyValidationError::field(
+                name,
+                format!("Invalid JSON field '{name}': expected a valid email address"),
+            ));
+        }
+        validate_field_boundaries(name, &value, &field.rules)
             .map_err(|message| BodyValidationError::field(name, message))?;
         fields.insert(name.to_owned(), value);
     }
@@ -463,6 +514,120 @@ fn parse_model_body(
         name: model.name.clone(),
         fields,
     })
+}
+
+/// Converts a parser-validated literal model default to its declared runtime type.
+fn model_default_value(field: &ModelField) -> Result<Value, String> {
+    let Some(Expression::Literal(value)) = &field.default_value else {
+        return Err("model field default must be a literal value".to_owned());
+    };
+    match (&field.type_name, value) {
+        (TypeName::String(_), Value::String(value)) => Ok(Value::String(value.clone())),
+        (TypeName::Integer(integer_type), Value::Integer { value, .. }) => Ok(Value::Integer {
+            value: *value,
+            integer_type: *integer_type,
+        }),
+        (TypeName::Double, Value::Integer { value, .. }) => Ok(Value::Double(*value as f64)),
+        (TypeName::Double, Value::Double(value)) => Ok(Value::Double(*value)),
+        (TypeName::Bool, Value::Bool(value)) => Ok(Value::Bool(*value)),
+        (TypeName::Char, Value::Char(value)) => Ok(Value::Char(*value)),
+        (TypeName::Uuid, Value::String(value)) => uuid::Uuid::parse_str(value)
+            .map(Value::Uuid)
+            .map_err(|_| "model field default is not a valid UUID".to_owned()),
+        _ => Err("model field default does not match its declared type".to_owned()),
+    }
+}
+
+/// Checks declarative lower and upper boundaries after JSON has a typed value.
+fn validate_field_boundaries(
+    field: &str,
+    value: &Value,
+    rules: &[ModelFieldRule],
+) -> Result<(), String> {
+    let minimum = rules.iter().find_map(|rule| match rule {
+        ModelFieldRule::Min(value) => Some(*value),
+        _ => None,
+    });
+    let maximum = rules.iter().find_map(|rule| match rule {
+        ModelFieldRule::Max(value) => Some(*value),
+        _ => None,
+    });
+    let allowed_values = rules.iter().find_map(|rule| match rule {
+        ModelFieldRule::OneOf(values) => Some(values),
+        _ => None,
+    });
+    if minimum.is_none() && maximum.is_none() && allowed_values.is_none() {
+        return Ok(());
+    }
+    match value {
+        Value::String(value) => {
+            if allowed_values.is_some_and(|values| {
+                !values
+                    .iter()
+                    .any(|allowed| allowed.as_str() == value.as_ref())
+            }) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected one of the declared values"
+                ));
+            }
+            let length = value.len() as i128;
+            if minimum.is_some_and(|minimum| length < minimum) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected at least {} UTF-8 byte(s)",
+                    minimum.expect("checked above")
+                ));
+            }
+            if maximum.is_some_and(|maximum| length > maximum) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected at most {} UTF-8 byte(s)",
+                    maximum.expect("checked above")
+                ));
+            }
+        }
+        Value::Integer { value, .. } => {
+            if minimum.is_some_and(|minimum| *value < minimum) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected a value of at least {}",
+                    minimum.expect("checked above")
+                ));
+            }
+            if maximum.is_some_and(|maximum| *value > maximum) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected a value of at most {}",
+                    maximum.expect("checked above")
+                ));
+            }
+        }
+        Value::Double(value) => {
+            if minimum.is_some_and(|minimum| *value < minimum as f64) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected a value of at least {}",
+                    minimum.expect("checked above")
+                ));
+            }
+            if maximum.is_some_and(|maximum| *value > maximum as f64) {
+                return Err(format!(
+                    "Invalid JSON field '{field}': expected a value of at most {}",
+                    maximum.expect("checked above")
+                ));
+            }
+        }
+        _ => unreachable!("the type checker validates model boundary rules"),
+    }
+    Ok(())
+}
+
+/// Performs a deliberately small, dependency-free e-mail shape validation.
+fn is_email(value: &str) -> bool {
+    let Some((local, domain)) = value.rsplit_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && domain.contains('.')
+        && !domain.starts_with('.')
+        && !domain.ends_with('.')
+        && !value.chars().any(char::is_whitespace)
 }
 
 /// Converts one JSON value without widening its declared model field type.

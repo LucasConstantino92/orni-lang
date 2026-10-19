@@ -248,6 +248,130 @@ impl Parser {
                 "expected ':' after the model field name",
             )?;
             let type_name = self.type_name()?;
+            let mut rules = Vec::new();
+            loop {
+                if self.matches(|kind| matches!(kind, TokenKind::Comma))
+                    && !matches!(self.peek().kind, TokenKind::Identifier(_))
+                {
+                    return Err(self.error_at_current("expected a model field rule after ','"));
+                }
+                let TokenKind::Identifier(rule) = self.peek().kind.clone() else {
+                    break;
+                };
+                let rule_token = self.advance().clone();
+                let rule = match rule.as_str() {
+                    "email" => crate::syntax::ModelFieldRule::Email,
+                    "unique" => crate::syntax::ModelFieldRule::Unique,
+                    "optional" => crate::syntax::ModelFieldRule::Optional,
+                    "min" | "max" => {
+                        self.consume(
+                            |kind| matches!(kind, TokenKind::LeftParen),
+                            "expected '(' after the model field rule",
+                        )?;
+                        let negative = self.matches(|kind| matches!(kind, TokenKind::Minus));
+                        let value_token = self.consume(
+                            |kind| matches!(kind, TokenKind::Int(_)),
+                            "expected an integer boundary in the model field rule",
+                        )?;
+                        let TokenKind::Int(value) = value_token.kind else {
+                            unreachable!("the rule boundary was validated as an integer")
+                        };
+                        self.consume(
+                            |kind| matches!(kind, TokenKind::RightParen),
+                            "expected ')' after the model field rule boundary",
+                        )?;
+                        let value = if negative {
+                            value.checked_neg().ok_or_else(|| {
+                                syntax_error(
+                                    &value_token,
+                                    "model field rule boundary is outside the supported range",
+                                )
+                            })?
+                        } else {
+                            value
+                        };
+                        if rule == "min" {
+                            crate::syntax::ModelFieldRule::Min(value)
+                        } else {
+                            crate::syntax::ModelFieldRule::Max(value)
+                        }
+                    }
+                    "one_of" => {
+                        self.consume(
+                            |kind| matches!(kind, TokenKind::LeftParen),
+                            "expected '(' after the 'one_of' model field rule",
+                        )?;
+                        let mut values = Vec::new();
+                        loop {
+                            let value = self.consume(
+                                |kind| matches!(kind, TokenKind::String(_)),
+                                "expected a string value in the 'one_of' model field rule",
+                            )?;
+                            let TokenKind::String(value) = value.kind else {
+                                unreachable!("the allowed value was validated as a string")
+                            };
+                            if values.contains(&value) {
+                                return Err(syntax_error(
+                                    &rule_token,
+                                    "the 'one_of' model field rule cannot repeat a value",
+                                )
+                                .with_code("ORNI-E116"));
+                            }
+                            values.push(value);
+                            if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
+                                break;
+                            }
+                        }
+                        self.consume(
+                            |kind| matches!(kind, TokenKind::RightParen),
+                            "expected ')' after the 'one_of' model field rule values",
+                        )?;
+                        crate::syntax::ModelFieldRule::OneOf(values)
+                    }
+                    _ => {
+                        return Err(syntax_error(
+                            &rule_token,
+                            "expected a model field rule such as 'email', 'unique', 'optional', 'min', 'max', or 'one_of'",
+                        )
+                        .with_code("ORNI-S001"));
+                    }
+                };
+                if rules.iter().any(|existing| {
+                    matches!(
+                        (existing, &rule),
+                        (
+                            crate::syntax::ModelFieldRule::Email,
+                            crate::syntax::ModelFieldRule::Email
+                        ) | (
+                            crate::syntax::ModelFieldRule::Unique,
+                            crate::syntax::ModelFieldRule::Unique
+                        ) | (
+                            crate::syntax::ModelFieldRule::Optional,
+                            crate::syntax::ModelFieldRule::Optional
+                        ) | (
+                            crate::syntax::ModelFieldRule::Min(_),
+                            crate::syntax::ModelFieldRule::Min(_)
+                        ) | (
+                            crate::syntax::ModelFieldRule::Max(_),
+                            crate::syntax::ModelFieldRule::Max(_)
+                        ) | (
+                            crate::syntax::ModelFieldRule::OneOf(_),
+                            crate::syntax::ModelFieldRule::OneOf(_)
+                        )
+                    )
+                }) {
+                    return Err(
+                        syntax_error(&rule_token, "model field rule is already declared")
+                            .with_code("ORNI-E116"),
+                    );
+                }
+                rules.push(rule);
+            }
+            let default_value = if self.matches(|kind| matches!(kind, TokenKind::Equal)) {
+                Some(self.expression()?)
+            } else {
+                None
+            };
             self.consume(
                 |kind| matches!(kind, TokenKind::Semicolon),
                 "expected ';' after the model field",
@@ -255,6 +379,8 @@ impl Parser {
             fields.push(ModelField {
                 name: field_name,
                 type_name,
+                rules,
+                default_value,
             });
         }
         self.consume(

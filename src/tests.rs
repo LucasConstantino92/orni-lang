@@ -32,6 +32,19 @@ fn validates_typed_data_models() {
     )
     .expect("models should accept built-in field types");
 
+    check(
+        r#"
+            model CreateProfile {
+                name: string<80>, min(2), max(80);
+                age: uint8, min(18), max(120);
+                bio: string<500>, optional;
+                role: string<16>, one_of("member", "admin") = "member";
+                active: bool = true;
+            }
+        "#,
+    )
+    .expect("models should accept declarative validation rules");
+
     let error = check(
         r#"
             model User {
@@ -59,6 +72,20 @@ fn validates_typed_data_models() {
         error
             .to_string()
             .contains("model fields must use a built-in value type")
+    );
+
+    let error = check(
+        r#"
+            model User {
+                enabled: bool min(1);
+            }
+        "#,
+    )
+    .expect_err("model boundaries require string or numeric fields");
+    assert!(
+        error
+            .to_string()
+            .contains("the 'min' and 'max' rules require a string or numeric field")
     );
 }
 
@@ -224,6 +251,27 @@ fn configures_the_development_server_from_main() {
 
     assert_eq!(application.name.as_deref(), Some("Orni API"));
     assert_eq!(application.port, 3200);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn configures_named_route_protection_from_main() {
+    let program = compile(
+        r#"
+            func main() -> unit {
+                app.protect(route: "/auth/login", attempts: 5, seconds: 900);
+            }
+        "#,
+    )
+    .expect("named login protection should compile");
+    let (_, application) = Interpreter::new(ExecutionLimits::default())
+        .execute_main(&program)
+        .expect("named login protection should execute");
+    assert_eq!(application.protected_routes.len(), 1);
+    let protection = &application.protected_routes[0];
+    assert_eq!(protection.path, "/auth/login");
+    assert_eq!(protection.maximum_attempts, 5);
+    assert_eq!(protection.lockout_seconds, 900);
 }
 
 #[test]

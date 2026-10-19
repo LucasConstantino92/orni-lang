@@ -141,6 +141,27 @@ pub(crate) struct ModelField {
     pub name: Token,
     /// The value type accepted by this field.
     pub type_name: TypeName,
+    /// Declarative constraints checked when JSON enters an HTTP route.
+    pub rules: Vec<ModelFieldRule>,
+    /// A literal value inserted when POST or PUT omits this field.
+    pub default_value: Option<Expression>,
+}
+
+/// A constraint attached to one model field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModelFieldRule {
+    /// Requires a string to use a conventional e-mail address shape.
+    Email,
+    /// Requires values in a store to be distinct for this field.
+    Unique,
+    /// Allows a JSON body to omit this field outside PATCH requests.
+    Optional,
+    /// Requires a string byte length or numeric value to meet a lower boundary.
+    Min(i128),
+    /// Requires a string byte length or numeric value to stay within an upper boundary.
+    Max(i128),
+    /// Requires a string field to equal one explicitly allowed value.
+    OneOf(Vec<String>),
 }
 
 /// A complete action that can appear in an Orni program.
@@ -348,6 +369,14 @@ pub(crate) enum Value {
     /// An ordered collection returned by native HTTP store operations.
     #[allow(dead_code)]
     List(Vec<Value>),
+    /// A JSON API collection with data and deterministic metadata.
+    #[allow(dead_code)]
+    Collection {
+        /// The ordered values returned to the client.
+        data: Box<Value>,
+        /// Pagination or collection information indexed by its public names.
+        meta: std::collections::BTreeMap<String, Value>,
+    },
     /// An HTTP response value created by the response built-ins.
     Response {
         /// The HTTP status code.
@@ -356,6 +385,8 @@ pub(crate) enum Value {
         body: Box<Value>,
         /// User-defined response headers validated by the response helpers.
         headers: Vec<(String, String)>,
+        /// Whether the HTTP boundary must wrap JSON data in the stable `data` envelope.
+        json_envelope: bool,
     },
     /// The absence of a meaningful value, currently returned by functions.
     Unit,
@@ -379,6 +410,7 @@ impl std::fmt::Display for Value {
             Self::Uuid(value) => write!(formatter, "{value}"),
             Self::Model { name, .. } => write!(formatter, "{name}"),
             Self::List(values) => write!(formatter, "{} item(s)", values.len()),
+            Self::Collection { data, .. } => write!(formatter, "collection of {data}"),
             Self::Response { body, .. } => write!(formatter, "{body}"),
             Self::Unit => write!(formatter, "unit"),
             Self::Provider { provider, .. } => write!(formatter, "{provider}"),
@@ -398,6 +430,7 @@ impl Value {
             Self::Uuid(_) => TypeName::Uuid,
             Self::Model { name, .. } => TypeName::Model(name.clone()),
             Self::List(_) => TypeName::Response,
+            Self::Collection { .. } => TypeName::Response,
             Self::Response { .. } => TypeName::Response,
             Self::Unit => TypeName::Unit,
             Self::Provider { contract, .. } => TypeName::Contract(contract.clone()),

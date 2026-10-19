@@ -16,6 +16,12 @@ use super::{
 pub(super) struct HttpRequest {
     pub(super) method: String,
     pub(super) path: String,
+    /// The media type sent by the client, without interpreting its parameters.
+    pub(super) content_type: Option<String>,
+    /// The representations the client is willing to receive, when declared.
+    pub(super) accept: Option<String>,
+    /// Optional client-generated key used to safely replay a POST response.
+    pub(super) idempotency_key: Option<String>,
     pub(super) body: String,
     pub(super) close_connection: bool,
 }
@@ -53,6 +59,10 @@ pub(super) fn read_request(
         return Ok(None);
     };
     let mut content_length = 0_usize;
+    let mut content_length_seen = false;
+    let mut content_type = None;
+    let mut accept: Option<String> = None;
+    let mut idempotency_key: Option<String> = None;
     let mut close_connection = false;
     let mut header_bytes = request_line.len();
     let mut header_count = 0_usize;
@@ -82,10 +92,49 @@ pub(super) fn read_request(
             return Err(RequestReadError::invalid("malformed HTTP request header"));
         };
         if name.eq_ignore_ascii_case("content-length") {
+            if content_length_seen {
+                return Err(RequestReadError::invalid(
+                    "request contains multiple Content-Length headers",
+                ));
+            }
+            content_length_seen = true;
             content_length = value
                 .trim()
                 .parse()
                 .map_err(|_| RequestReadError::invalid("invalid Content-Length header"))?;
+        }
+        if name.eq_ignore_ascii_case("content-type")
+            && content_type.replace(value.trim().to_owned()).is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple Content-Type headers",
+            ));
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(RequestReadError::invalid(
+                "Transfer-Encoding is not supported; send a bounded Content-Length body",
+            ));
+        }
+        if name.eq_ignore_ascii_case("accept") {
+            let value = value.trim();
+            match &mut accept {
+                Some(existing) => {
+                    existing.push(',');
+                    existing.push_str(value);
+                }
+                None => accept = Some(value.to_owned()),
+            }
+        }
+        if name.eq_ignore_ascii_case("idempotency-key") {
+            let value = value.trim();
+            if value.is_empty()
+                || value.len() > 128
+                || idempotency_key.replace(value.to_owned()).is_some()
+            {
+                return Err(RequestReadError::invalid(
+                    "Idempotency-Key must be a single non-empty value no longer than 128 bytes",
+                ));
+            }
         }
         if name.eq_ignore_ascii_case("connection") && value.trim().eq_ignore_ascii_case("close") {
             close_connection = true;
@@ -126,6 +175,9 @@ pub(super) fn read_request(
     Ok(Some(HttpRequest {
         method,
         path,
+        content_type,
+        accept,
+        idempotency_key,
         body,
         close_connection: close_connection || is_http_1_0,
     }))

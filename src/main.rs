@@ -400,24 +400,26 @@ route get "/health" => health;
 "#;
 
 const USERS_DATA_TEMPLATE: &str = r#"/// Describes a stored user.
-model User { id: uuid; name: string<80>; email: string<254>; }
+model User { id: uuid; name: string<80>; email: string<254> email unique; }
 
 /// Defines the fields a client supplies when creating a user.
-model CreateUser { name: string<80>; email: string<254>; }
+model CreateUser { name: string<80>; email: string<254> email; }
 
 /// Defines the fields a client supplies when replacing a user.
-model UpdateUser { name: string<80>; email: string<254>; }
+model UpdateUser { name: string<80>; email: string<254> email; }
 
 /// Defines the fields a client can supply when partially updating a user.
-model PatchUser { name: string<80>; email: string<254>; }
+model PatchUser { name: string<80>; email: string<254> email; }
 
 store users: User;
 "#;
 
 const USERS_API_TEMPLATE: &str = r#"import features.users.data.{CreateUser, PatchUser, UpdateUser, users};
 
-func list_users() -> response { return users.list(); }
-func create_user(input: CreateUser) -> response { return users.create(input); }
+func list_users(search: string = "", limit: uint16 = 20, cursor: string = "") -> response {
+    return response.collection(users.search("name", search, limit, cursor));
+}
+func create_user(input: CreateUser) -> response { return response.json(users.create(input)); }
 func get_user(id: uuid) -> response { return users.find(id); }
 func update_user(id: uuid, input: UpdateUser) -> response { return users.replace(id, input); }
 func patch_user(id: uuid, input: PatchUser) -> response { return users.patch(id, input); }

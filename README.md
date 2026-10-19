@@ -116,22 +116,22 @@ responses, and storage in the HTTP preview:
 model User {
     id: uuid;
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email, unique;
 }
 
 model CreateUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 model UpdateUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 model PatchUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 ```
 
@@ -139,6 +139,30 @@ Models currently accept built-in value types only. A `POST` route can receive
 one model as its final handler parameter; Orni validates the JSON object before
 the handler runs. Nested models and persistence will be introduced with the
 CRUD API.
+
+Field rules stay beside the type: `email` validates a conventional e-mail
+shape, while `unique` prevents another value in the same `store` from using the
+field. A duplicate create, replace, or patch returns `409 Conflict`.
+
+Use `min(n)` and `max(n)` for inclusive validation at the HTTP boundary, and
+`optional` when a POST or PUT body may omit a field. Separate field rules with
+commas for readability. String boundaries use UTF-8 bytes, matching `string<N>`
+capacity; numeric boundaries use the declared value.
+
+```orni
+model CreateUser {
+    name: string<80>, min(2), max(80);
+    age: uint8, min(18), max(120);
+    bio: string<500>, optional;
+    role: string<16>, one_of("member", "admin") = "member";
+    active: bool = true;
+}
+```
+
+Invalid values return `400 Bad Request` with `error.details` keyed by the
+offending field before the route handler runs. A literal default is inserted
+when a `POST` or `PUT` body omits that field. Defaults are intentionally not
+applied to `PATCH`, so a partial update never resets unrelated values.
 
 ## Smart inference, explicit control
 
@@ -338,6 +362,18 @@ handler. `orni serve` starts a native Rust server on
 `127.0.0.1:3000`; it is not available through the WASI editor/compiler target.
 See [`examples/experimental/http_server`](examples/experimental/http_server).
 
+Routes with a model body, including `POST`, require `Content-Type:
+application/json` (optional parameters such as `charset=utf-8` are accepted).
+Missing or incompatible media types receive `415 Unsupported Media Type`; an
+empty model body receives a structured `400 Bad Request`. The native boundary
+also rejects ambiguous duplicate body headers and unsupported transfer encodings
+before a handler runs.
+
+An omitted `Accept` header follows normal HTTP behavior and accepts JSON. When
+a client explicitly excludes JSON (for example, `Accept: text/plain`), a typed
+JSON body route returns `406 Not Acceptable` before the handler runs or a store
+is changed.
+
 The native server processes connections concurrently, reuses HTTP/1.1
 connections, and keeps application stores synchronized across handlers. Each
 connection has a five-second idle read timeout, serves at most 1,000 requests,
@@ -356,6 +392,8 @@ max_connections_per_ip = 32
 max_requests_per_connection = 1000
 max_requests_per_ip = 120
 request_window_seconds = 60
+cache_ttl_seconds = 15
+max_cache_entries = 256
 ```
 
 Connections beyond the global limit receive `503`; a single address exceeding
@@ -363,7 +401,34 @@ its configured connection share receives `429`. Every route also has a default
 per-IP request budget (`120` requests per `60` seconds); excess requests receive
 `429` with `ORNI_HTTP_RATE_LIMITED`. These controls protect server availability.
 Authentication endpoints should still add account-aware rate limits and lockout
-policies when the application introduces authentication.
+policies when the application introduces authentication. For any exact sensitive
+route, enable the focused built-in guard from `main`:
+
+```orni
+func main() -> unit {
+    app.name("My SaaS");
+    app.port(3000);
+    app.protect(route: "/auth/login", attempts: 5, seconds: 900);
+}
+```
+
+`app.protect(route)` uses those same safe defaults: five failed `401` or
+`403` responses from one IP temporarily lock that exact route for 15 minutes.
+Use it once per sensitive route, such as sign-in, verification, or password
+recovery. A successful response clears the counter. While locked, Orni returns
+`429` with the neutral `ORNI_HTTP_PROTECTED_ROUTE_LOCKED` error and a
+`Retry-After` header, without exposing account details.
+This protects the server boundary; an authentication implementation should
+still store passwords using a modern password-hashing algorithm and consider
+account-level controls when identities are available.
+
+Successful `GET` responses are cached in memory for 15 seconds by default. The
+full URL, including query parameters such as `search`, `limit`, and `cursor`,
+forms the cache key. Entries are bounded by `max_cache_entries`, honor
+`Cache-Control: no-store`, expire automatically, and are cleared after a
+successful write (`POST`, `PUT`, `PATCH`, or `DELETE`). A frontend never has to
+send a mandatory cleanup ping; it can simply stop requesting results when the
+user selects one.
 Request-by-request logs are off by default so they do not distort throughput.
 Enable them during local debugging with:
 
@@ -395,30 +460,34 @@ route get "/hello/:name" => hello;
 ```
 
 `GET /hello/Orni` responds with `Hello, Orni!`. Literal routes take precedence
-over parameterized routes. A typed, paginated GET endpoint can stay equally
+over parameterized routes. A typed, cursor-based GET endpoint can stay equally
 small:
 
 ```orni
-func list_users(page: uint32 = 1, limit: uint16 = 20) -> response {
-    return users.list(page, limit);
+func list_users(search: string = "", limit: uint16 = 20, cursor: string = "") -> response {
+    return response.collection(users.search("name", search, limit, cursor));
 }
 
 route get "/users" => list_users;
 ```
 
-`GET /users?page=2&limit=50` supplies typed values to the handler. `GET /users`
-uses its defaults. A missing required parameter such as `search: string`, or an
-invalid value such as `page=70000` for `uint16`, receives `400 Bad Request`.
-`store.list()` retains its simple array response. `store.list(page, limit)`
-uses `page: uint32` and `limit: uint16`, limits each response to 100 items, and
-returns a JSON object with `data`, `page`, `limit`, `total`, and `total_pages`.
-Pass `sort` and `direction` as the third and fourth arguments to sort by a
-declared model field before pagination; direction is `asc` or `desc`.
+`GET /users?search=lucas&limit=50` supplies typed values to the handler. When
+its `meta` contains `has_more: true`, pass `next_cursor` back as `cursor` to
+read the next window. `GET /users` uses its defaults. A missing required
+parameter such as `search: string`, or an invalid value such as `limit=70000`
+for `uint16`, receives `400 Bad Request`. Cursor lists read at most `limit + 1`
+records and never calculate a total just to paginate. `store.search(field,
+query, limit, cursor)` searches one declared string field case-insensitively.
+Its cursor is bound to the normalized query and ordering, so it cannot be reused
+for a different search. `store.list()` retains its simple array response. The
+older `store.list(page, limit)` remains available when a numbered page and total
+are specifically needed; pass `sort` and `direction` as its third and fourth
+arguments to sort by a declared model field first.
 
 API tests can assert relevant JSON fragments without depending on generated UUIDs:
 
 ```orni
-assert api.contains("GET", "/users?page=1&limit=20", "\"total\":3");
+assert api.contains("GET", "/users?search=lucas&limit=20", "\"has_more\":");
 ```
 
 For a complete in-memory CRUD endpoint, declare a model with `id: uuid` and a
@@ -435,12 +504,14 @@ model User {
 store users: User;
 
 func create_user(input: CreateUser) -> response {
-    return users.create(input);
+    return response.json(users.create(input));
 }
 
 route post "/users" => create_user;
 
-func list_users() -> response { return users.list(); }
+func list_users(search: string = "", limit: uint16 = 20, cursor: string = "") -> response {
+    return response.collection(users.search("name", search, limit, cursor));
+}
 route get "/users" => list_users;
 
 func get_user(id: uuid) -> response { return users.find(id); }
@@ -461,6 +532,12 @@ client-owned `CreateUser` fields and returns the complete `User`. The collection
 For `PATCH`, every declared field is optional in the JSON body; only supplied
 fields are changed, and an empty object is rejected.
 
+Successful model-backed `POST` creation also includes `Location: /users/:id`.
+Clients that may retry a timed-out create can send one `Idempotency-Key` header.
+For five minutes, repeating the same key, route, and JSON body returns the
+original response without repeating the write. Reusing that key with a different
+body returns `409 Conflict`.
+
 Store operations also include `list`, which returns every retained model as a
 JSON array. Route handlers can produce explicit business responses with
 `response.ok(body)`, `response.created(body)`, `response.bad_request(body)`,
@@ -471,6 +548,45 @@ JSON array. Route handlers can produce explicit business responses with
 `response.redirect(url)` returns `302 Found` with a `Location` header. The
 starter project uses it at `/` to open the Orni README until the application
 owner replaces that route.
+
+For new JSON APIs, `response.json(value)` is the standard success envelope. It
+accepts a model or a store response, retains the store status (so a create stays
+`201`), and returns `{ "data": value }`. `response.created_json(value)` always
+returns `201` with the same envelope. This gives creation endpoints a stable
+shape before paginated lists later add their own metadata.
+
+```orni
+func create_user(input: CreateUser) -> response {
+    return response.json(users.create(input));
+}
+```
+
+```sh
+curl -i -X POST http://127.0.0.1:3000/users \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: create-user-001" \
+  -d '{"name":"Orni","email":"hello@orni.dev"}'
+```
+
+For collections, use `response.collection(...)`. It keeps existing `store.list`
+behavior available, but gives new endpoints one stable JSON shape. A plain list
+has `meta.total`. Cursor lists have `limit`, `has_more`, and a `next_cursor`
+only when another bounded window is available.
+
+```orni
+func list_users(limit: uint16 = 20, cursor: string = "") -> response {
+    return response.collection(users.list(limit, cursor));
+}
+```
+
+`GET /users?search=lucas&limit=20` then returns:
+
+```json
+{
+  "data": [],
+  "meta": { "limit": 20, "has_more": false }
+}
+```
 
 Use `response.header(response, name, value)` to set a response header without
 changing its status or body. It can wrap any response helper or CRUD store
@@ -521,8 +637,10 @@ or other error response helper uses the same JSON envelope:
 `code` is stable for clients and tests, while `message` gives a practical
 explanation for people. The current runtime reports `400` for malformed input,
 `404` for missing routes or resources, `405` for an unsupported method, `409`
-for conflicts, and `500` for unexpected handler failures. A `405` response also
-includes the standard `Allow` header listing accepted methods.
+for conflicts, `406` when a client explicitly refuses a typed JSON response,
+`415` when a typed JSON body uses an incompatible media type, and `500` for
+unexpected handler failures. A `405` response also includes the standard
+`Allow` header listing accepted methods.
 
 When a JSON body fails model validation, the envelope includes `details` keyed
 by the field when Orni can identify it:

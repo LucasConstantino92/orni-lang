@@ -2,7 +2,7 @@
 
 use crate::{
     diagnostics::OrniError,
-    syntax::{Expression, Parameter, Token, TypeName, Value},
+    syntax::{Expression, IntegerType, Parameter, Token, TypeName, Value},
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -11,8 +11,6 @@ use super::{
     Interpreter, coerce_value, expression_token, identifier_name, runtime_error,
     validate_response_header,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::syntax::IntegerType;
 
 impl Interpreter {
     /// Invokes a named function with evaluated argument values.
@@ -159,6 +157,118 @@ impl Interpreter {
                 },
                 body: Box::new(body),
                 headers: Vec::new(),
+                json_envelope: false,
+            });
+        }
+        if matches!(name, "response.json" | "response.created_json") {
+            if arguments.len() != 1 {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            let value = self.evaluate(&arguments[0])?;
+            let (status, body, headers, envelope) = match value {
+                Value::Response {
+                    status,
+                    body,
+                    headers,
+                    ..
+                } => (status, body, headers, status < 400),
+                Value::Model { .. } => (200, Box::new(value), Vec::new(), true),
+                _ => {
+                    return Err(runtime_error(
+                        expression_token(&arguments[0]).unwrap_or(closing_parenthesis),
+                        "response.json requires a model or response containing JSON data",
+                    )
+                    .with_code("ORNI-E107"));
+                }
+            };
+            return Ok(Value::Response {
+                status: if name == "response.created_json" && status < 400 {
+                    201
+                } else {
+                    status
+                },
+                body,
+                headers,
+                json_envelope: envelope,
+            });
+        }
+        if name == "response.collection" {
+            let [argument] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function 'response.collection' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Response {
+                status,
+                body,
+                headers,
+                json_envelope,
+            } = self.evaluate(argument)?
+            else {
+                return Err(runtime_error(
+                    expression_token(argument).unwrap_or(closing_parenthesis),
+                    "response.collection requires a store list response",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if status >= 400 {
+                return Ok(Value::Response {
+                    status,
+                    body,
+                    headers,
+                    json_envelope,
+                });
+            }
+            let collection = match *body {
+                Value::List(values) => {
+                    let total = values.len() as i128;
+                    Value::Collection {
+                        data: Box::new(Value::List(values)),
+                        meta: std::collections::BTreeMap::from([(
+                            "total".to_owned(),
+                            Value::Integer {
+                                value: total,
+                                integer_type: IntegerType::smallest_signed(total),
+                            },
+                        )]),
+                    }
+                }
+                Value::Model { name, mut fields }
+                    if matches!(name.as_str(), "Page" | "CursorPage") =>
+                {
+                    let Some(data) = fields.remove("data") else {
+                        unreachable!("store pages always contain data")
+                    };
+                    Value::Collection {
+                        data: Box::new(data),
+                        meta: fields,
+                    }
+                }
+                _ => {
+                    return Err(runtime_error(
+                        expression_token(argument).unwrap_or(closing_parenthesis),
+                        "response.collection requires users.list() or users.list(page, limit)",
+                    )
+                    .with_code("ORNI-E107"));
+                }
+            };
+            return Ok(Value::Response {
+                status,
+                body: Box::new(collection),
+                headers,
+                json_envelope: false,
             });
         }
         if name == "response.no_content" {
@@ -173,6 +283,7 @@ impl Interpreter {
                 status: 204,
                 body: Box::new(Value::Unit),
                 headers: Vec::new(),
+                json_envelope: false,
             });
         }
         if name == "response.header" {
@@ -187,6 +298,7 @@ impl Interpreter {
                 status,
                 body,
                 mut headers,
+                json_envelope,
             } = self.evaluate(response)?
             else {
                 return Err(runtime_error(
@@ -216,6 +328,7 @@ impl Interpreter {
                 status,
                 body,
                 headers,
+                json_envelope,
             });
         }
         if name == "app.name" {
@@ -272,6 +385,71 @@ impl Interpreter {
             }
             #[cfg(target_arch = "wasm32")]
             let _ = port;
+            return Ok(Value::Unit);
+        }
+        if name == "app.protect" {
+            if !matches!(arguments.len(), 1 | 3) {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.protect' expects 1 or 3 arguments",
+                )
+                .with_code("ORNI-E108"));
+            }
+            let Value::String(path) = self.evaluate(&arguments[0])? else {
+                return Err(runtime_error(
+                    expression_token(&arguments[0]).unwrap_or(closing_parenthesis),
+                    "app.protect requires a route path string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            let (maximum_attempts, lockout_seconds) = if arguments.len() == 3 {
+                let Value::Integer {
+                    value: attempts, ..
+                } = self.evaluate(&arguments[1])?
+                else {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "app.protect limits must be integers",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                let Value::Integer { value: seconds, .. } = self.evaluate(&arguments[2])? else {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "app.protect limits must be integers",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                (usize::try_from(attempts).ok(), u64::try_from(seconds).ok())
+            } else {
+                (Some(5), Some(900))
+            };
+            let (Some(maximum_attempts), Some(lockout_seconds)) =
+                (maximum_attempts, lockout_seconds)
+            else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "app.protect limits must be positive values",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if !path.starts_with('/') || maximum_attempts == 0 || lockout_seconds == 0 {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "app.protect requires an absolute path and positive limits",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            self.application
+                .protected_routes
+                .push(super::RouteProtection {
+                    path: path.to_string(),
+                    maximum_attempts,
+                    lockout_seconds,
+                });
+            #[cfg(target_arch = "wasm32")]
+            let _ = (path, maximum_attempts, lockout_seconds);
             return Ok(Value::Unit);
         }
         let values = arguments

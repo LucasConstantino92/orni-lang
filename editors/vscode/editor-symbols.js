@@ -32,11 +32,62 @@ const builtins = {
       "Run files under `tests` with `orni test`; named scenarios are shown in the result.",
     ],
   },
+  email: {
+    signature: "email",
+    summary: "A model field rule that accepts conventional e-mail address shapes only.",
+    details: [
+      "Use it after a string field type in a model that receives JSON from an HTTP route.",
+      "It rejects whitespace, a missing local part, or an invalid domain before the route handler runs.",
+    ],
+  },
+  unique: {
+    signature: "unique",
+    summary: "A model field rule that keeps values distinct inside its store.",
+    details: [
+      "Use it after a model field type, commonly with e-mail or an external identifier.",
+      "Create, replace, and patch return 409 Conflict when another stored resource already owns the value.",
+    ],
+  },
+  optional: {
+    signature: "optional",
+    summary: "A model field rule that allows a JSON body to omit this field.",
+    details: [
+      "Use it after a model field type when a POST or PUT request may leave the field out.",
+      "The field is absent from the handler model instead of receiving an implicit default value.",
+    ],
+  },
+  min: {
+    signature: "min(boundary: int)",
+    summary: "A model field rule that sets an inclusive lower boundary.",
+    details: [
+      "Use it after string or numeric model fields. String boundaries use UTF-8 byte length.",
+      "Example: name: string<80> min(2); or age: uint8 min(18).",
+    ],
+  },
+  max: {
+    signature: "max(boundary: int)",
+    summary: "A model field rule that sets an inclusive upper boundary.",
+    details: [
+      "Use it after string or numeric model fields. String boundaries use UTF-8 byte length.",
+      "A string max cannot exceed its declared string<N> capacity.",
+    ],
+  },
+  one_of: {
+    signature: 'one_of(value: string, ...)',
+    summary: "A model field rule that restricts a string to an explicit set of allowed values.",
+    details: [
+      "Use it for small, closed choices such as roles or statuses.",
+      'Example: role: string<16>, one_of("member", "admin") = "member";',
+    ],
+  },
 };
 
 const responseHelpers = {
   ok: ["response.ok(body)", "Returns a successful HTTP response with status 200."],
   created: ["response.created(body)", "Returns a successful HTTP response with status 201."],
+  json: ["response.json(data)", "Returns a JSON response with a stable data envelope."],
+  created_json: ["response.created_json(data)", "Returns a created JSON response with a stable data envelope."],
+  collection: ["response.collection(list)", "Returns a JSON collection with data and metadata."],
   bad_request: ["response.bad_request(message)", "Returns a JSON API error with status 400."],
   unauthorized: ["response.unauthorized(message)", "Returns a JSON API error with status 401."],
   forbidden: ["response.forbidden(message)", "Returns a JSON API error with status 403."],
@@ -51,6 +102,9 @@ const responseHelpers = {
 const responseHelperGuidance = {
   ok: ["Body", "Any value supported by the HTTP boundary. Strings become text; models and lists become JSON."],
   created: ["Body", "The created resource. Use this after a successful create operation."],
+  json: ["Data", "A model or store response. The HTTP body is { data: ... }; existing store status and safe headers are preserved."],
+  created_json: ["Data", "A model or store response. The HTTP body is { data: ... } with status 201."],
+  collection: ["List", "A response returned by store.list(). Plain lists receive meta.total; paginated lists receive page, limit, total, and total_pages inside meta."],
   bad_request: ["Message", "A client-safe explanation of why the request cannot be processed."],
   unauthorized: ["Message", "A client-safe explanation that authentication is required or invalid."],
   forbidden: ["Message", "A client-safe explanation that the caller lacks permission."],
@@ -68,6 +122,13 @@ const apiHelpers = {
   contains: ["api.contains(method, path, fragment, body?)", "Calls an application route in memory and returns whether its response body contains the expected text fragment."],
 };
 
+const appHelpers = {
+  protect: [
+    "app.protect(route: string)\napp.protect(route: string, attempts: int, seconds: int)",
+    "Temporarily blocks repeated authentication failures from one IP address on an exact sensitive route. route is required; attempts and seconds are optional only in the short form.",
+  ],
+};
+
 const apiHelperGuidance = {
   status: ["Parameters", "method and path are required strings. body is optional JSON text for requests that accept a model body.", "Returns", "The numeric HTTP status returned by the route without opening a TCP listener."],
   body: ["Parameters", "method and path are required strings. body is optional JSON text for requests that accept a model body.", "Returns", "The response body as text. Use it to assert JSON or plain-text API output."],
@@ -76,13 +137,23 @@ const apiHelperGuidance = {
 
 const storeHelpers = {
   list: [
-    "store.list()\nstore.list(page: uint32, limit: uint16)\nstore.list(page: uint32, limit: uint16, sort: string, direction: string)",
-    "Returns every stored model, or a bounded page with deterministic metadata.",
+    "store.list()\nstore.list(limit: uint16, cursor: string)\nstore.list(page: uint32, limit: uint16)\nstore.list(page: uint32, limit: uint16, sort: string, direction: string)",
+    "Returns every stored model, a cursor window, or a numbered page with deterministic metadata.",
     [
       "Call without arguments for the complete JSON array.",
+      "Call with limit and cursor to read a bounded window. It reads at most limit + 1 records, reports has_more, and returns next_cursor only when another window exists.",
       "Call with `page` (starting at 1) and `limit` (1 through 100) to return `{ data, page, limit, total, total_pages }`.",
       "Pass a declared model field and `asc` or `desc` to sort before pagination.",
       "Use typed GET query parameters to pass pagination directly from the URL.",
+    ],
+  ],
+  search: [
+    "store.search(field: string, query: string, limit: uint16, cursor: string)\nstore.search(field: string, query: string, limit: uint16, cursor: string, sort: string, direction: string)",
+    "Returns a bounded, cursor-based text search over one declared string field.",
+    [
+      "field must name a string field from the stored model; query is normalized case-insensitively.",
+      "The cursor is opaque and bound to the field, normalized query, sort field, and direction. Do not reuse it for another search.",
+      "The four-argument form sorts ascending by the searched field. Use the six-argument form for a declared sort field and asc or desc direction.",
     ],
   ],
 };
@@ -103,6 +174,10 @@ const backendSymbols = {
   app: {
     path: ["src", "runtime", "interpreter", "calls.rs"],
     needle: 'if name == "app.name" {',
+  },
+  "app.protect": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "struct RouteGuard {",
   },
   api: {
     path: ["src", "runtime", "http.rs"],
@@ -140,6 +215,18 @@ const backendSymbols = {
     path: ["src", "runtime", "interpreter", "calls.rs"],
     needle: '"response.created" => 201,',
   },
+  "response.json": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if matches!(name, "response.json" | "response.created_json")',
+  },
+  "response.created_json": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if matches!(name, "response.json" | "response.created_json")',
+  },
+  "response.collection": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if name == "response.collection" {',
+  },
   "response.not_found": {
     path: ["src", "runtime", "interpreter", "calls.rs"],
     needle: '"response.not_found" => 404,',
@@ -159,6 +246,30 @@ const backendSymbols = {
   "response.conflict": {
     path: ["src", "runtime", "interpreter", "calls.rs"],
     needle: '"response.conflict" => 409,',
+  },
+  email: {
+    path: ["src", "frontend", "parser", "statements.rs"],
+    needle: '"email" => crate::syntax::ModelFieldRule::Email',
+  },
+  unique: {
+    path: ["src", "frontend", "parser", "statements.rs"],
+    needle: '"unique" => crate::syntax::ModelFieldRule::Unique',
+  },
+  optional: {
+    path: ["src", "frontend", "parser", "statements.rs"],
+    needle: '"optional" => crate::syntax::ModelFieldRule::Optional',
+  },
+  min: {
+    path: ["src", "runtime", "http.rs"],
+    needle: "fn validate_field_boundaries(",
+  },
+  max: {
+    path: ["src", "runtime", "http.rs"],
+    needle: "fn validate_field_boundaries(",
+  },
+  one_of: {
+    path: ["src", "runtime", "http.rs"],
+    needle: "fn validate_field_boundaries(",
   },
   "response.internal_error": {
     path: ["src", "runtime", "interpreter", "calls.rs"],
@@ -195,6 +306,10 @@ const backendSymbols = {
   "store.list": {
     path: ["src", "runtime", "interpreter", "stores.rs"],
     needle: '"list" if values.is_empty() => Value::Response',
+  },
+  "store.search": {
+    path: ["src", "runtime", "interpreter", "stores.rs"],
+    needle: '"search" => {',
   },
   "store.find": {
     path: ["src", "runtime", "interpreter", "stores.rs"],
@@ -249,14 +364,14 @@ const keywordDocumentation = {
   bind: "Selects the provider that Orni injects for a contract.",
   to: "Connects a contract binding to its selected provider.",
   route: "Maps an HTTP method and path to a top-level handler function.",
-  get: "Declares an HTTP GET route. Path segments such as `:id` bind to the first handler parameters in URL order. Remaining primitive handler parameters bind from the query string by name. A parameter with a default is optional; one without a default is required. Invalid, duplicate, or unexpected query values return `400 Bad Request` before the handler runs.\n\n```orni\nfunc list_users(page: uint32 = 1, limit: uint16 = 20) -> response {\n    return users.list(page, limit);\n}\n\nroute get \\\"/users\\\" => list_users;\n// GET /users?page=2&limit=50\n```",
+  get: "Declares an HTTP GET route. Path segments such as `:id` bind to the first handler parameters in URL order. Remaining primitive handler parameters bind from the query string by name. A parameter with a default is optional; one without a default is required. Invalid, duplicate, or unexpected query values return `400 Bad Request` before the handler runs.\n\n```orni\nfunc list_users(search: string = \\\"\\\", limit: uint16 = 20, cursor: string = \\\"\\\") -> response {\n    return response.collection(users.search(\\\"name\\\", search, limit, cursor));\n}\n\nroute get \\\"/users\\\" => list_users;\n// GET /users?search=lucas&limit=20\n```",
   post: "Declares an HTTP POST route with a validated model request body.",
   put: "Declares an HTTP PUT route with a validated model request body.",
   patch: "Declares an HTTP PATCH route with a partial validated model request body.",
   delete: "Declares an HTTP DELETE route.",
   assert: "Stops execution when a boolean condition is false; use it for Orni tests.",
   test: "Groups assertions into a named test scenario. A scenario passes only when every statement in its body succeeds.",
-  app: "Configures the application startup from main with app.name(...) and app.port(...).",
+  app: "Configures application startup from main with app.name(...), app.port(...), and app.protect(...).",
 };
 
 const primitiveTypes = {
@@ -296,8 +411,8 @@ const primitiveTypes = {
   },
   response: {
     summary: "An explicit HTTP result returned by a route handler.",
-    details: ["Create one with response.ok, response.created, response.not_found, and related helpers.", "Use response.header to attach validated HTTP headers."],
-    example: "func create(input: User) -> response {\n    return response.created(input);\n}",
+    details: ["Create one with response.ok, response.created, response.json, response.collection, response.not_found, and related helpers.", "response.json wraps model data in a stable { data: ... } JSON envelope while preserving a store response status.", "response.collection turns store lists into { data: [...], meta: { ... } }.", "Use response.header to attach validated HTTP headers."],
+    example: "func create(input: User) -> response {\n    return response.json(users.create(input));\n}",
   },
   api: {
     summary: "In-memory HTTP test API available through orni test.",
@@ -480,6 +595,23 @@ async function hoverFor(document, position) {
     return new vscode.Hover(markdown, symbol.range);
   }
 
+  const appHelper = appHelperAt(source, symbolOffset, symbol.name);
+  if (appHelper) {
+    const markdown = new vscode.MarkdownString();
+    appendDocumentation(markdown, {
+      signature: appHelper[0],
+      origin: "orni:http",
+      summary: appHelper[1],
+      details: [
+        "The one-argument form allows 5 failed 401 or 403 responses, then locks the route for 900 seconds.",
+        "Use route, attempts, and seconds as named arguments to select a positive attempt count and lock duration in seconds.",
+        "A successful response clears prior failures. The client receives 429 without account-existence details while locked.",
+      ],
+      footer: "\nCtrl+Click to open its Rust implementation.",
+    });
+    return new vscode.Hover(markdown, symbol.range);
+  }
+
   const keyword = keywordDocumentation[symbol.name];
   if (keyword) {
     return new vscode.Hover(new vscode.MarkdownString(keyword), symbol.range);
@@ -591,7 +723,7 @@ async function hoverFor(document, position) {
 function signatureHelpFor(document, position) {
   const source = document.getText();
   const prefix = source.slice(0, document.offsetAt(position));
-  const call = prefix.match(/((?:(?:response|api)\.)?[A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)$/s);
+  const call = prefix.match(/((?:(?:response|api|app)\.)?[A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)$/s);
   if (!call) return undefined;
 
   const responseHelper = call[1].startsWith("response.")
@@ -616,6 +748,22 @@ function signatureHelpFor(document, position) {
       new vscode.ParameterInformation("method"),
       new vscode.ParameterInformation("path"),
       new vscode.ParameterInformation("body?"),
+    ];
+    const help = new vscode.SignatureHelp();
+    help.signatures = [signature];
+    help.activeSignature = 0;
+    help.activeParameter = Math.min((call[2].match(/,/g) || []).length, 2);
+    return help;
+  }
+  const appHelper = call[1].startsWith("app.")
+    ? appHelpers[call[1].slice("app.".length)]
+    : undefined;
+  if (appHelper) {
+    const signature = new vscode.SignatureInformation(appHelper[0], appHelper[1]);
+    signature.parameters = [
+      new vscode.ParameterInformation("route"),
+      new vscode.ParameterInformation("attempts?"),
+      new vscode.ParameterInformation("seconds?"),
     ];
     const help = new vscode.SignatureHelp();
     help.signatures = [signature];
@@ -662,6 +810,12 @@ function storeHelperAt(source, usageOffset, symbolName) {
 function apiHelperAt(source, usageOffset, symbolName) {
   const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
   return /api\s*\.\s*$/.test(before) ? apiHelpers[symbolName] : undefined;
+}
+
+/** Returns application configuration helper documentation under app. */
+function appHelperAt(source, usageOffset, symbolName) {
+  const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
+  return /app\s*\.\s*$/.test(before) ? appHelpers[symbolName] : undefined;
 }
 
 /** Shows compiler-like inferred types without changing the source document. */

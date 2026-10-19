@@ -4,7 +4,28 @@ All notable changes to Orni are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [0.9.1] - Unreleased
+## [0.9.2] - Unreleased
+
+### Added
+
+- Strict JSON media-type enforcement for HTTP routes that receive typed model bodies.
+- Clear `415 Unsupported Media Type` and empty-body diagnostics before POST handlers run.
+- Defensive HTTP request framing validation for duplicate body headers and unsupported transfer encodings.
+- `response.json(...)` and `response.created_json(...)` for stable `{ "data": ... }` JSON success envelopes.
+- `response.collection(...)` for `{ "data": [...], "meta": { ... } }` collection responses without changing existing `store.list` output.
+- Cursor collection windows through `store.list(limit, cursor)`, with bounded reads, `has_more`, and `next_cursor` instead of mandatory page totals.
+- Declared cursor search through `store.search(...)`, including normalized text matching, optional declared sorting, and cursors bound to their filter and ordering state.
+- `Accept` negotiation for typed JSON body routes, including `406 Not Acceptable` before a rejected POST mutates storage.
+- Declarative `email` and `unique` model field rules, with JSON validation and `409 Conflict` enforcement for create, replace, and patch.
+- Automatic `Location` headers for successful model-backed POST creation.
+- Optional five-minute `Idempotency-Key` replay protection for POST retries, including conflict detection when a key is reused with a different body.
+- Bounded, short-lived GET response caching keyed by the complete URL, with `Cache-Control: no-store` support and automatic invalidation after successful writes.
+- Per-project HTTP cache configuration through `cache_ttl_seconds` and `max_cache_entries`.
+- `app.protect(...)` for per-IP brute-force protection on explicit sensitive routes, with safe defaults, temporary lockouts, neutral `429` responses, and reset after successful authentication.
+- Declarative `min(...)`, `max(...)`, and `optional` model field rules for typed JSON bodies, with field-specific `400` validation details.
+- Literal model defaults for POST and PUT bodies, plus `one_of(...)` string choices for closed values such as roles and statuses.
+
+## [0.9.1] - 2026-10-19
 
 ### Added
 

@@ -157,12 +157,18 @@ impl TypeChecker {
                 _ => TypeName::Bool,
             });
         }
-        if matches!(name, "app.name" | "app.port") {
-            if arguments.len() != 1 {
+        if matches!(name, "app.name" | "app.port" | "app.protect") {
+            let valid_arity = if name == "app.protect" {
+                matches!(arguments.len(), 1 | 3)
+            } else {
+                arguments.len() == 1
+            };
+            if !valid_arity {
+                let expected = if name == "app.protect" { "1 or 3" } else { "1" };
                 return Err(semantic_error(
                     closing_parenthesis,
                     &format!(
-                        "function '{name}' expects 1 argument(s), but received {}",
+                        "function '{name}' expects {expected} argument(s), but received {}",
                         arguments.len()
                     ),
                 )
@@ -174,9 +180,27 @@ impl TypeChecker {
                     return Err(semantic_error(name_token, "app.name requires a string")
                         .with_code("ORNI-E107"));
                 }
-            } else if !matches!(actual, TypeName::Integer(_)) {
+            } else if name == "app.port" && !matches!(actual, TypeName::Integer(_)) {
                 return Err(semantic_error(name_token, "app.port requires an integer")
                     .with_code("ORNI-E107"));
+            }
+            if name == "app.protect" {
+                if !matches!(actual, TypeName::String(_)) {
+                    return Err(semantic_error(
+                        name_token,
+                        "app.protect requires a route path string",
+                    )
+                    .with_code("ORNI-E107"));
+                }
+                for argument in &arguments[1..] {
+                    if !matches!(self.expression_type(argument)?, TypeName::Integer(_)) {
+                        return Err(semantic_error(
+                            name_token,
+                            "app.protect limits must be integers",
+                        )
+                        .with_code("ORNI-E107"));
+                    }
+                }
             }
             return Ok(TypeName::Unit);
         }
@@ -210,6 +234,42 @@ impl TypeChecker {
                 )
                 .with_code("ORNI-E107"));
             }
+            return Ok(TypeName::Response);
+        }
+        if matches!(name, "response.json" | "response.created_json") {
+            if arguments.len() != 1 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            let value_type = self.expression_type(&arguments[0])?;
+            if !matches!(value_type, TypeName::Model(_) | TypeName::Response) {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "response.json requires a model or response containing JSON data",
+                )
+                .with_code("ORNI-E107"));
+            }
+            return Ok(TypeName::Response);
+        }
+        if name == "response.collection" {
+            if arguments.len() != 1 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function 'response.collection' expects 1 argument(s), but received {}",
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            let value_type = self.expression_type(&arguments[0])?;
+            self.require_type(name_token, TypeName::Response, value_type, "first argument")?;
             return Ok(TypeName::Response);
         }
         if name == "response.no_content" {
@@ -259,10 +319,25 @@ impl TypeChecker {
                         return Ok(TypeName::Response);
                     }
                     match arguments.len() {
-                        2 => vec![
-                            TypeName::Integer(crate::syntax::IntegerType::UInt32),
-                            TypeName::Integer(crate::syntax::IntegerType::UInt16),
-                        ],
+                        2 => {
+                            let first = self.expression_type(&arguments[0])?;
+                            let second = self.expression_type(&arguments[1])?;
+                            if matches!(
+                                first,
+                                TypeName::Integer(crate::syntax::IntegerType::UInt16)
+                            ) && matches!(second, TypeName::String(_))
+                            {
+                                vec![
+                                    TypeName::Integer(crate::syntax::IntegerType::UInt16),
+                                    TypeName::String(None),
+                                ]
+                            } else {
+                                vec![
+                                    TypeName::Integer(crate::syntax::IntegerType::UInt32),
+                                    TypeName::Integer(crate::syntax::IntegerType::UInt16),
+                                ]
+                            }
+                        }
                         4 => vec![
                             TypeName::Integer(crate::syntax::IntegerType::UInt32),
                             TypeName::Integer(crate::syntax::IntegerType::UInt16),
@@ -281,11 +356,37 @@ impl TypeChecker {
                         }
                     }
                 }
+                "search" => match arguments.len() {
+                    4 => vec![
+                        TypeName::String(None),
+                        TypeName::String(None),
+                        TypeName::Integer(crate::syntax::IntegerType::UInt16),
+                        TypeName::String(None),
+                    ],
+                    6 => vec![
+                        TypeName::String(None),
+                        TypeName::String(None),
+                        TypeName::Integer(crate::syntax::IntegerType::UInt16),
+                        TypeName::String(None),
+                        TypeName::String(None),
+                        TypeName::String(None),
+                    ],
+                    _ => {
+                        return Err(semantic_error(
+                            closing_parenthesis,
+                            &format!(
+                                "store operation '{name}' expects 4 or 6 argument(s), but received {}",
+                                arguments.len()
+                            ),
+                        )
+                        .with_code("ORNI-E108"));
+                    }
+                },
                 "replace" | "patch" => vec![TypeName::Uuid, TypeName::Model(model.clone())],
                 _ => {
                     return Err(semantic_error(
                         name_token,
-                        "stores support create, list, find, replace, patch, and delete",
+                        "stores support create, list, search, find, replace, patch, and delete",
                     )
                     .with_code("ORNI-E119"));
                 }

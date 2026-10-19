@@ -175,6 +175,8 @@ impl Project {
                     "max_requests_per_connection" => http.max_requests_per_connection = number,
                     "max_requests_per_ip" => http.max_requests_per_ip = number,
                     "request_window_seconds" => http.request_window_seconds = number as u64,
+                    "cache_ttl_seconds" => http.cache_ttl_seconds = number as u64,
+                    "max_cache_entries" => http.max_cache_entries = number,
                     _ => return Err(error(format!("unknown http setting '{key}'"))),
                 }
             }

@@ -38,6 +38,20 @@ pub(crate) struct ApplicationConfig {
     pub name: Option<String>,
     /// Local TCP port used by the development server.
     pub port: u16,
+    /// Sensitive routes with focused brute-force protection.
+    pub protected_routes: Vec<RouteProtection>,
+}
+
+/// One application-declared login protection policy.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RouteProtection {
+    /// Exact route path protected by this policy.
+    pub path: String,
+    /// Failed authentication responses permitted before a temporary lock.
+    pub maximum_attempts: usize,
+    /// Lock duration after the failed-attempt threshold is reached.
+    pub lockout_seconds: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,6 +60,7 @@ impl Default for ApplicationConfig {
         Self {
             name: None,
             port: 3000,
+            protected_routes: Vec::new(),
         }
     }
 }

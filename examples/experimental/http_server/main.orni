@@ -2,25 +2,25 @@
 model User {
     id: uuid;
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email, unique;
 }
 
 /// Defines the client-owned fields accepted when creating a user.
 model CreateUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 /// Defines the editable fields accepted when replacing a user.
 model UpdateUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 /// Declares the fields accepted individually by a partial user update.
 model PatchUser {
     name: string<80>;
-    email: string<254>;
+    email: string<254>, email;
 }
 
 /// Keeps users in memory for the lifetime of this local development server.
@@ -28,10 +28,17 @@ store users: User;
 
 /// Returns a created JSON resource after the HTTP boundary validates its body.
 func create_user(input: CreateUser) -> response {
-    return users.create(input);
+    return response.json(users.create(input));
 }
 
 route post "/users" => create_user;
+
+/// Returns a bounded cursor window without counting the complete collection.
+func list_users(search: string = "", limit: uint16 = 20, cursor: string = "") -> response {
+    return response.collection(users.search("name", search, limit, cursor));
+}
+
+route get "/users" => list_users;
 
 /// Finds one user by its validated UUID primary key.
 func get_user(id: uuid) -> response {
