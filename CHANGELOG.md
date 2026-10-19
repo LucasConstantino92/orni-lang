@@ -4,7 +4,7 @@ All notable changes to Orni are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [0.9.2] - Unreleased
+## [0.9.2] - 2026-10-19
 
 ### Added
 
