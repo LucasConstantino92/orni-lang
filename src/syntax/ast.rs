@@ -84,6 +84,10 @@ pub(crate) enum TypeName {
     Char,
     /// A universally unique identifier stored as 16 bytes.
     Uuid,
+    /// A non-negative memory or payload size stored internally as bytes.
+    Size,
+    /// A non-negative elapsed time stored internally as milliseconds.
+    Duration,
     /// The absence of a meaningful value.
     Unit,
     /// A user-defined dependency contract.
@@ -104,6 +108,8 @@ impl std::fmt::Display for TypeName {
             Self::Bool => write!(formatter, "bool"),
             Self::Char => write!(formatter, "char"),
             Self::Uuid => write!(formatter, "uuid"),
+            Self::Size => write!(formatter, "size"),
+            Self::Duration => write!(formatter, "duration"),
             Self::Unit => write!(formatter, "unit"),
             Self::Contract(name) => write!(formatter, "{name}"),
             Self::Model(name) => write!(formatter, "{name}"),
@@ -357,6 +363,10 @@ pub(crate) enum Value {
     Char(char),
     /// A validated universally unique identifier.
     Uuid(Uuid),
+    /// A non-negative byte count created by the `Size` constructor.
+    Size(u64),
+    /// A non-negative millisecond count created by the `Duration` constructor.
+    Duration(u64),
     /// A typed record with fields declared by a model.
     #[allow(dead_code)]
     // Constructed by the native HTTP JSON boundary, which is unavailable in WASI.
@@ -408,6 +418,8 @@ impl std::fmt::Display for Value {
             Self::Bool(value) => write!(formatter, "{value}"),
             Self::Char(value) => write!(formatter, "{value}"),
             Self::Uuid(value) => write!(formatter, "{value}"),
+            Self::Size(bytes) => write!(formatter, "{bytes} bytes"),
+            Self::Duration(milliseconds) => write!(formatter, "{milliseconds} ms"),
             Self::Model { name, .. } => write!(formatter, "{name}"),
             Self::List(values) => write!(formatter, "{} item(s)", values.len()),
             Self::Collection { data, .. } => write!(formatter, "collection of {data}"),
@@ -428,6 +440,8 @@ impl Value {
             Self::Bool(_) => TypeName::Bool,
             Self::Char(_) => TypeName::Char,
             Self::Uuid(_) => TypeName::Uuid,
+            Self::Size(_) => TypeName::Size,
+            Self::Duration(_) => TypeName::Duration,
             Self::Model { name, .. } => TypeName::Model(name.clone()),
             Self::List(_) => TypeName::Response,
             Self::Collection { .. } => TypeName::Response,

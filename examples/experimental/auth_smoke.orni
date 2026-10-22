@@ -1,0 +1,61 @@
+/// Configures a small signed-token API for local verification.
+func main() -> unit {
+    app.name("Orni authentication smoke test");
+    app.port(3211);
+    app.body_limit(Size(kilobytes: 1));
+    app.cache_limit(Size(kilobytes: 16));
+    app.auth(
+        secret: "development-secret-change-before-production",
+        access_time: Duration(hours: 1),
+        refresh_time: Duration(days: 7),
+        max_sessions: 2
+    );
+    app.protect(
+        route: "/auth/login",
+        attempts: 5,
+        lock_time: Duration(minutes: 15)
+    );
+    app.require_auth("/profile");
+    app.require_refresh("/auth/refresh");
+    app.logout("/auth/logout");
+}
+
+/// Describes the credentials accepted by this demonstration login endpoint.
+model LoginInput {
+    email: string<254>;
+    password: string<128>;
+}
+
+/// Issues a token after an application-specific credential check.
+func login(input: LoginInput) -> response {
+    let refresh = auth.refresh_token("user-42");
+    return auth.cookie(
+        response.header(
+            response.ok(auth.token("user-42")),
+            "X-Refresh-Token",
+            refresh
+        ),
+        refresh
+    );
+}
+
+/// Provides a new short-lived access token for a valid refresh token.
+func refresh(input: LoginInput) -> response {
+    return response.ok(auth.refresh());
+}
+
+/// Revokes every active refresh session for the authenticated subject.
+func logout(input: LoginInput) -> response {
+    return response.no_content();
+}
+
+/// Returns the subject that Orni validated from the Bearer token.
+func profile() -> response {
+    let user = auth.user();
+    return response.ok(user);
+}
+
+route post "/auth/login" => login;
+route post "/auth/refresh" => refresh;
+route post "/auth/logout" => logout;
+route get "/profile" => profile;

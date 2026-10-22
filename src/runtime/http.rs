@@ -4,15 +4,15 @@ use crate::syntax::{
     Expression, ModelField, ModelFieldRule, Statement, Token, TokenKind, TypeName, Value,
 };
 
-use super::{ExecutionLimits, Interpreter, MemoryStore, MemoryStores};
+use super::{AuthConfig, ExecutionLimits, Interpreter, MemoryStore, MemoryStores};
 
+pub(crate) mod auth;
 mod request;
 mod response;
 mod server;
 
 use response::{HttpResponse, response_value};
 pub(crate) use server::serve;
-pub(super) const MAX_REQUEST_BYTES: usize = 1_048_576;
 pub(super) const MAX_REQUEST_LINE_BYTES: usize = 8_192;
 pub(super) const MAX_REQUEST_HEADER_BYTES: usize = 32_768;
 pub(super) const MAX_REQUEST_HEADERS: usize = 64;
@@ -51,15 +51,33 @@ pub(crate) fn api_test_context(program: &[Statement], limits: ExecutionLimits) -
     }
 }
 
-/// Executes one in-memory request for `api.status` and `api.body`.
+/// One in-memory HTTP response exposed to Orni API test helpers.
+pub(crate) struct ApiTestResponse {
+    pub(crate) status: u16,
+    pub(crate) body: String,
+    headers: Vec<(String, String)>,
+}
+
+impl ApiTestResponse {
+    /// Reads one response header without making header-name casing observable.
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// Executes one in-memory request for Orni API test helpers.
 pub(crate) fn api_test_request(
     context: &ApiTestContext,
     method: &str,
     path: &str,
     body: &str,
-) -> (u16, String) {
+    request_header: Option<(&str, &str)>,
+) -> ApiTestResponse {
     let routes = route_table(&context.program);
-    let response = route_response_with_stores(
+    let mut response = route_response_with_stores(
         method,
         path,
         body,
@@ -68,7 +86,16 @@ pub(crate) fn api_test_request(
         context.stores.clone(),
         context.limits,
     );
-    (response.status, response.body)
+    if let Some((name, value)) = request_header
+        && name.eq_ignore_ascii_case("if-none-match")
+    {
+        response = response.not_modified_if_matches(Some(value));
+    }
+    ApiTestResponse {
+        status: response.status,
+        body: response.body,
+        headers: response.headers,
+    }
 }
 
 /// Schema kept by the HTTP boundary to validate a JSON request body.
@@ -121,6 +148,7 @@ fn memory_stores(program: &[Statement]) -> MemoryStores {
                                 model: handler_name(model).to_owned(),
                                 fields: fields.clone(),
                                 values: Default::default(),
+                                versions: Default::default(),
                             },
                         )
                     })
@@ -226,6 +254,53 @@ pub(super) fn route_response_with_stores(
     stores: MemoryStores,
     limits: ExecutionLimits,
 ) -> HttpResponse {
+    route_response_with_stores_and_expected_version(
+        method, path, body, program, routes, stores, limits, None,
+    )
+}
+
+/// Evaluates one route while applying an optional HTTP entity-tag precondition.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn route_response_with_stores_and_expected_version(
+    method: &str,
+    path: &str,
+    body: &str,
+    program: &[Statement],
+    routes: &[Route],
+    stores: MemoryStores,
+    limits: ExecutionLimits,
+    expected_store_version: Option<u64>,
+) -> HttpResponse {
+    route_response_with_http_context(
+        method,
+        path,
+        body,
+        program,
+        routes,
+        stores,
+        limits,
+        expected_store_version,
+        None,
+        None,
+        false,
+    )
+}
+
+/// Evaluates one route with optional authenticated-request context.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn route_response_with_http_context(
+    method: &str,
+    path: &str,
+    body: &str,
+    program: &[Statement],
+    routes: &[Route],
+    stores: MemoryStores,
+    limits: ExecutionLimits,
+    expected_store_version: Option<u64>,
+    auth: Option<AuthConfig>,
+    authenticated_subject: Option<String>,
+    authenticated_with_refresh_token: bool,
+) -> HttpResponse {
     if let Some((route, arguments)) = find_route(routes, path, Some(method)) {
         let arguments = match route_arguments(route, arguments) {
             Ok(arguments) => arguments,
@@ -247,7 +322,14 @@ pub(super) fn route_response_with_stores(
                 Err(error) => return HttpResponse::invalid_body(error),
             }
         }
-        let interpreter = Interpreter::with_stores(limits, stores);
+        let interpreter = Interpreter::with_http_context(
+            limits,
+            stores,
+            expected_store_version,
+            auth,
+            authenticated_subject,
+            authenticated_with_refresh_token,
+        );
         let result = if arguments.iter().all(Option::is_some) {
             interpreter.execute_handler(
                 program,
@@ -272,6 +354,14 @@ pub(super) fn route_response_with_stores(
                 }
                 response
             }
+            Err(error)
+                if error
+                    .diagnostics()
+                    .first()
+                    .is_some_and(|diagnostic| diagnostic.code() == "ORNI_HTTP_UNAUTHORIZED") =>
+            {
+                HttpResponse::error(401, "ORNI_HTTP_UNAUTHORIZED", "Authentication is required")
+            }
             Err(error) => {
                 eprintln!("Orni route handler failed: {error}");
                 HttpResponse::error(500, "ORNI_HTTP_INTERNAL_ERROR", "Internal Server Error")
@@ -293,6 +383,12 @@ pub(super) fn route_response_with_stores(
     }
 }
 
+/// Checks whether the matched route is explicitly protected by `app.require_auth`.
+pub(super) fn route_requires_auth(path: &str, routes: &[Route], protected: &[String]) -> bool {
+    find_route(routes, path, None)
+        .is_some_and(|(route, _)| protected.iter().any(|configured| configured == &route.path))
+}
+
 /// Extracts a generated resource ID from either raw or enveloped JSON output.
 fn response_location_id(body: &str) -> Option<String> {
     let json = serde_json::from_str::<serde_json::Value>(body).ok()?;
@@ -309,6 +405,16 @@ fn response_location_id(body: &str) -> Option<String> {
 /// body directly and intentionally do not need to construct HTTP headers.
 pub(super) fn route_requires_json_body(method: &str, path: &str, routes: &[Route]) -> bool {
     find_route(routes, path, Some(method)).is_some_and(|(route, _)| route.body_model.is_some())
+}
+
+/// Lists the route methods a browser may request for one concrete path.
+pub(super) fn allowed_methods_for_path(path: &str, routes: &[Route]) -> Option<String> {
+    const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+    let methods = METHODS
+        .into_iter()
+        .filter(|method| find_route(routes, path, Some(method)).is_some())
+        .collect::<Vec<_>>();
+    (!methods.is_empty()).then(|| format!("{}, OPTIONS", methods.join(", ")))
 }
 
 /// Evaluates one request with an isolated in-memory store for unit tests.
@@ -674,6 +780,8 @@ fn parse_json_value(
             .and_then(|value| uuid::Uuid::parse_str(value).ok())
             .map(Value::Uuid)
             .ok_or_else(invalid),
+        TypeName::Size => value.as_u64().map(Value::Size).ok_or_else(invalid),
+        TypeName::Duration => value.as_u64().map(Value::Duration).ok_or_else(invalid),
         TypeName::Unit | TypeName::Contract(_) | TypeName::Model(_) | TypeName::Response => {
             Err(invalid())
         }
@@ -714,6 +822,11 @@ fn parse_route_value(parameter: &str, value: &str, type_name: &TypeName) -> Resu
         }
         TypeName::Uuid => uuid::Uuid::parse_str(value)
             .map(Value::Uuid)
+            .map_err(|_| invalid()),
+        TypeName::Size => value.parse::<u64>().map(Value::Size).map_err(|_| invalid()),
+        TypeName::Duration => value
+            .parse::<u64>()
+            .map(Value::Duration)
             .map_err(|_| invalid()),
         TypeName::Unit | TypeName::Contract(_) | TypeName::Model(_) | TypeName::Response => {
             Err(invalid())
@@ -767,6 +880,11 @@ fn parse_typed_url_value(
         }
         TypeName::Uuid => uuid::Uuid::parse_str(value)
             .map(Value::Uuid)
+            .map_err(|_| invalid()),
+        TypeName::Size => value.parse::<u64>().map(Value::Size).map_err(|_| invalid()),
+        TypeName::Duration => value
+            .parse::<u64>()
+            .map(Value::Duration)
             .map_err(|_| invalid()),
         TypeName::Unit | TypeName::Contract(_) | TypeName::Model(_) | TypeName::Response => {
             Err(invalid())

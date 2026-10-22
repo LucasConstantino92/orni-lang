@@ -40,6 +40,34 @@ pub(crate) struct ApplicationConfig {
     pub port: u16,
     /// Sensitive routes with focused brute-force protection.
     pub protected_routes: Vec<RouteProtection>,
+    /// Explicit browser origins allowed to call this local API.
+    pub cors_origins: Vec<String>,
+    /// Token settings used by routes that require a signed Bearer token.
+    pub auth: Option<AuthConfig>,
+    /// Exact route paths that require a valid Bearer token.
+    pub authenticated_routes: Vec<String>,
+    /// Exact route paths that exchange a refresh token for a new access token.
+    pub refresh_routes: Vec<String>,
+    /// Exact route paths that revoke every in-memory refresh session for a subject.
+    pub logout_routes: Vec<String>,
+    /// Maximum accepted request body bytes set in the application entry point.
+    pub body_limit_bytes: Option<usize>,
+    /// Maximum retained cache bytes set in the application entry point.
+    pub cache_limit_bytes: Option<usize>,
+}
+
+/// Application-owned token settings. The secret never leaves the server process.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthConfig {
+    /// Secret used to sign and validate tokens.
+    pub secret: String,
+    /// Maximum access-token lifetime, in milliseconds.
+    pub access_duration_milliseconds: u64,
+    /// Maximum refresh-token lifetime, in milliseconds.
+    pub refresh_duration_milliseconds: u64,
+    /// Maximum concurrent in-memory refresh sessions allowed for one subject.
+    pub maximum_sessions_per_subject: usize,
 }
 
 /// One application-declared login protection policy.
@@ -50,8 +78,8 @@ pub(crate) struct RouteProtection {
     pub path: String,
     /// Failed authentication responses permitted before a temporary lock.
     pub maximum_attempts: usize,
-    /// Lock duration after the failed-attempt threshold is reached.
-    pub lockout_seconds: u64,
+    /// Lock duration after the failed-attempt threshold is reached, in milliseconds.
+    pub lockout_milliseconds: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +89,13 @@ impl Default for ApplicationConfig {
             name: None,
             port: 3000,
             protected_routes: Vec::new(),
+            cors_origins: Vec::new(),
+            auth: None,
+            authenticated_routes: Vec::new(),
+            refresh_routes: Vec::new(),
+            logout_routes: Vec::new(),
+            body_limit_bytes: None,
+            cache_limit_bytes: None,
         }
     }
 }
@@ -80,6 +115,15 @@ pub(crate) struct Interpreter {
     application: ApplicationConfig,
     #[cfg(not(target_arch = "wasm32"))]
     api_test: Option<ApiTestContext>,
+    /// Optional HTTP resource revision that must still match before a mutation.
+    #[cfg(not(target_arch = "wasm32"))]
+    expected_store_version: Option<u64>,
+    /// Authenticated subject injected by the native HTTP boundary for one request.
+    #[cfg(not(target_arch = "wasm32"))]
+    authenticated_subject: Option<String>,
+    /// Whether the request presented a refresh token rather than an access token.
+    #[cfg(not(target_arch = "wasm32"))]
+    authenticated_with_refresh_token: bool,
 }
 
 impl Interpreter {
@@ -99,6 +143,12 @@ impl Interpreter {
             application: ApplicationConfig::default(),
             #[cfg(not(target_arch = "wasm32"))]
             api_test: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            expected_store_version: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            authenticated_subject: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            authenticated_with_refresh_token: false,
         }
     }
 
@@ -107,6 +157,36 @@ impl Interpreter {
     pub fn with_stores(limits: ExecutionLimits, stores: MemoryStores) -> Self {
         let mut interpreter = Self::new(limits);
         interpreter.stores = Some(stores);
+        interpreter
+    }
+
+    /// Creates an interpreter whose next store mutation must match an HTTP ETag revision.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_stores_and_expected_version(
+        limits: ExecutionLimits,
+        stores: MemoryStores,
+        expected_store_version: Option<u64>,
+    ) -> Self {
+        let mut interpreter = Self::with_stores(limits, stores);
+        interpreter.expected_store_version = expected_store_version;
+        interpreter
+    }
+
+    /// Creates an interpreter for one HTTP request with an already-validated subject.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_http_context(
+        limits: ExecutionLimits,
+        stores: MemoryStores,
+        expected_store_version: Option<u64>,
+        auth: Option<AuthConfig>,
+        authenticated_subject: Option<String>,
+        authenticated_with_refresh_token: bool,
+    ) -> Self {
+        let mut interpreter =
+            Self::with_stores_and_expected_version(limits, stores, expected_store_version);
+        interpreter.application.auth = auth;
+        interpreter.authenticated_subject = authenticated_subject;
+        interpreter.authenticated_with_refresh_token = authenticated_with_refresh_token;
         interpreter
     }
 

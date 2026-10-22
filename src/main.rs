@@ -18,7 +18,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 enum Command<'a> {
     Run(&'a str),
     Serve(&'a str),
-    Dev,
+    Dev(&'a str),
     Test(&'a str),
     New(&'a str, bool),
     Check(&'a str),
@@ -33,7 +33,7 @@ enum Command<'a> {
 
 fn usage(executable: &str) -> String {
     format!(
-        "Orni {VERSION}\n\nUsage:\n  {executable} new <project-name> [--empty]\n  {executable} dev\n  {executable} run [file.orni | project-directory]\n  {executable} serve [file.orni | project-directory]\n  {executable} test [file.orni | project-directory]\n  {executable} check [file.orni | project-directory]\n  {executable} check-module <file.orni>\n  {executable} --version\n  {executable} --help\n\nWithout a path, run, serve, check, and test use the nearest orni.toml entry."
+        "Orni {VERSION}\n\nUsage:\n  {executable} new <project-name> [--empty]\n  {executable} dev [project-directory]\n  {executable} run [file.orni | project-directory]\n  {executable} serve [file.orni | project-directory]\n  {executable} test [file.orni | project-directory]\n  {executable} check [file.orni | project-directory]\n  {executable} check-module <file.orni>\n  {executable} --version\n  {executable} --help\n\nWithout a path, dev, run, serve, check, and test use the nearest orni.toml entry."
     )
 }
 
@@ -48,7 +48,7 @@ fn parse_command(arguments: &[String]) -> Option<Command<'_>> {
         }
         [command] if command == "run" => Some(Command::Run(".")),
         [command] if command == "serve" => Some(Command::Serve(".")),
-        [command] if command == "dev" => Some(Command::Dev),
+        [command] if command == "dev" => Some(Command::Dev(".")),
         [command] if command == "test" => Some(Command::Test(".")),
         [command, name] if command == "new" => Some(Command::New(name, false)),
         [command, name, flag] if command == "new" && flag == "--empty" => {
@@ -60,6 +60,7 @@ fn parse_command(arguments: &[String]) -> Option<Command<'_>> {
         [flag] if flag == "--check-stdin" => Some(Command::CheckStdin),
         [command, path] if command == "run" => Some(Command::Run(path)),
         [command, path] if command == "serve" => Some(Command::Serve(path)),
+        [command, path] if command == "dev" => Some(Command::Dev(path)),
         [command, path] if command == "test" => Some(Command::Test(path)),
         [command, path] if command == "check" || command == "--check" => Some(Command::Check(path)),
         [command, path] if command == "check-module" || command == "--check-module" => {
@@ -150,15 +151,16 @@ fn main() {
                 entry_path(path).and_then(|path| orni::serve_file(path).map(|()| String::new()))
             }
         }
-        Command::Dev => {
+        Command::Dev(path) => {
             #[cfg(target_arch = "wasm32")]
             {
+                let _ = path;
                 eprintln!("'orni dev' requires the native Rust target");
                 process::exit(2);
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                entry_path(".").and_then(|path| orni::serve_file(path).map(|()| String::new()))
+                entry_path(path).and_then(|path| orni::serve_file(path).map(|()| String::new()))
             }
         }
         Command::Test(path) => run_tests(path),
@@ -497,7 +499,11 @@ mod tests {
             parse_command(&arguments(&["new", "my_api", "--empty"])),
             Some(Command::New("my_api", true))
         );
-        assert_eq!(parse_command(&arguments(&["dev"])), Some(Command::Dev));
+        assert_eq!(parse_command(&arguments(&["dev"])), Some(Command::Dev(".")));
+        assert_eq!(
+            parse_command(&arguments(&["dev", "my_api"])),
+            Some(Command::Dev("my_api"))
+        );
         assert_eq!(
             parse_command(&arguments(&["test"])),
             Some(Command::Test("."))

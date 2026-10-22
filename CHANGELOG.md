@@ -4,6 +4,28 @@ All notable changes to Orni are documented in this file.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.9.3] - 2026-10-22
+
+### Added
+
+- Automatic ETag revisions for model-backed store resources and optional atomic `If-Match` preconditions for PUT, PATCH, and DELETE operations.
+- Stable `412 Precondition Failed` responses with `ORNI_HTTP_PRECONDITION_FAILED` when a client attempts to write an outdated resource representation.
+- Conditional GET support through `If-None-Match`, returning `304 Not Modified` without resending an unchanged model-backed resource.
+- `orni dev [project-directory]` so a local API can be started without changing the terminal working directory.
+- `api.header(...)` and `api.status_with(...)` for in-memory assertions over response and request headers, including ETag and 304 behavior.
+- Explicit `app.cors(origin)` configuration with route-aware browser `OPTIONS` preflight responses and a safe allowlist for framework request headers.
+- Signed, expiring HMAC-SHA256 Bearer tokens through `app.auth(...)`, `auth.token(...)`, `app.require_auth(...)`, and `auth.user()`.
+- Standard `401 Unauthorized` plus `WWW-Authenticate: Bearer` handling for missing, expired, and modified tokens before protected handlers run.
+- Separate refresh tokens with a seven-day default lifetime, optional per-app expiry, dedicated refresh routes, and access-token renewal through `auth.refresh()`.
+- In-memory refresh-token rotation, replay detection, subject-level session revocation, and `app.logout(...)` routes.
+- Native `size` values through `Size(bytes: ...)`, `Size(kilobytes: ...)`, `Size(megabytes: ...)`, and `Size(gigabytes: ...)`, with checked byte normalization and editor documentation/navigation.
+- Native `duration` values through `Duration(milliseconds: ...)`, `Duration(seconds: ...)`, `Duration(minutes: ...)`, `Duration(hours: ...)`, and `Duration(days: ...)`, required by time-sensitive application configuration.
+- `app.body_limit(Size(...))` and `app.cache_limit(Size(...))` for per-application bounded request parsing and response-cache memory.
+- Duration-based named authentication and brute-force protection configuration, secure refresh cookies, and active refresh-session tracking with oldest-session eviction.
+- A complete documented local authentication lifecycle covering login, protected requests, refresh rotation, and logout, plus explicit in-memory persistence boundaries.
+
 ## [0.9.2] - 2026-10-19
 
 ### Added
@@ -115,3 +137,5 @@ The project follows [Semantic Versioning](https://semver.org/).
 [0.7.6]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.7.6
 [0.8.0]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.8.0
 [0.9.0]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.0
+[0.9.2]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.2
+[0.9.3]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.3

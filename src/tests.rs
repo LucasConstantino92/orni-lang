@@ -20,6 +20,65 @@ fn executes_a_small_program() {
 }
 
 #[test]
+fn creates_typed_sizes_from_explicit_units() {
+    let output = run(r#"
+        let upload_limit: size = Size(megabytes: 10);
+        let small_buffer: size = Size(kilobytes: 256);
+        print upload_limit;
+        print small_buffer;
+    "#)
+    .expect("Size values should run");
+
+    assert_eq!(output, "10485760 bytes\n262144 bytes\n");
+
+    let error = run("let limit: size = Size(megabytes: -1);")
+        .expect_err("negative sizes should be rejected");
+    assert!(error.to_string().contains("Size must fit"));
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn configures_native_durations_and_resource_sizes_from_main() {
+    let program = compile(
+        r#"
+            func main() -> unit {
+                app.body_limit(Size(megabytes: 2));
+                app.cache_limit(Size(megabytes: 8));
+                app.protect(
+                    route: "/auth/login",
+                    attempts: 5,
+                    lock_time: Duration(minutes: 15)
+                );
+                app.auth(
+                    secret: "development secret that is long enough",
+                    access_time: Duration(hours: 1),
+                    refresh_time: Duration(days: 7),
+                    max_sessions: 2
+                );
+            }
+        "#,
+    )
+    .expect("native time and size configuration should compile");
+    let (_, application) = Interpreter::new(ExecutionLimits::default())
+        .execute_main(&program)
+        .expect("application configuration should execute");
+
+    assert_eq!(application.body_limit_bytes, Some(2 * 1_048_576));
+    assert_eq!(application.cache_limit_bytes, Some(8 * 1_048_576));
+    assert_eq!(
+        application.protected_routes[0].lockout_milliseconds,
+        900_000
+    );
+    assert_eq!(
+        application
+            .auth
+            .expect("auth is configured")
+            .access_duration_milliseconds,
+        3_600_000
+    );
+}
+
+#[test]
 fn validates_typed_data_models() {
     check(
         r#"
@@ -259,7 +318,8 @@ fn configures_named_route_protection_from_main() {
     let program = compile(
         r#"
             func main() -> unit {
-                app.protect(route: "/auth/login", attempts: 5, seconds: 900);
+                app.cors("http://localhost:5173");
+                app.protect(route: "/auth/login", attempts: 5, lock_time: Duration(minutes: 15));
             }
         "#,
     )
@@ -268,10 +328,11 @@ fn configures_named_route_protection_from_main() {
         .execute_main(&program)
         .expect("named login protection should execute");
     assert_eq!(application.protected_routes.len(), 1);
+    assert_eq!(application.cors_origins, vec!["http://localhost:5173"]);
     let protection = &application.protected_routes[0];
     assert_eq!(protection.path, "/auth/login");
     assert_eq!(protection.maximum_attempts, 5);
-    assert_eq!(protection.lockout_seconds, 900);
+    assert_eq!(protection.lockout_milliseconds, 900_000);
 }
 
 #[test]
@@ -287,7 +348,11 @@ fn executes_api_assertions_against_routes_without_a_server() {
     let application = compile(
         r#"
             func health() -> string { return "OK"; }
+            func cached() -> response {
+                return response.header(response.ok("cached"), "ETag", "\"1\"");
+            }
             route get "/health" => health;
+            route get "/cached" => cached;
         "#,
     )
     .expect("application should compile");
@@ -298,6 +363,8 @@ fn executes_api_assertions_against_routes_without_a_server() {
                 assert api.body("GET", "/health") == "OK";
                 assert api.contains("GET", "/health", "O");
                 assert api.status("GET", "/missing") == 404;
+                assert api.header("GET", "/cached", "ETag") == "\"1\"";
+                assert api.status_with("GET", "/cached", "If-None-Match", "\"1\"") == 304;
             }
         "#,
     )

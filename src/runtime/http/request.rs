@@ -8,9 +8,7 @@ use std::{
     net::TcpStream,
 };
 
-use super::{
-    MAX_REQUEST_BYTES, MAX_REQUEST_HEADER_BYTES, MAX_REQUEST_HEADERS, MAX_REQUEST_LINE_BYTES,
-};
+use super::{MAX_REQUEST_HEADER_BYTES, MAX_REQUEST_HEADERS, MAX_REQUEST_LINE_BYTES};
 
 /// One parsed HTTP request, including whether its client will close the connection.
 pub(super) struct HttpRequest {
@@ -22,6 +20,20 @@ pub(super) struct HttpRequest {
     pub(super) accept: Option<String>,
     /// Optional client-generated key used to safely replay a POST response.
     pub(super) idempotency_key: Option<String>,
+    /// Optional entity tag supplied by a client before replacing a resource.
+    pub(super) if_match: Option<String>,
+    /// Optional entity tags held by a client before reading a representation.
+    pub(super) if_none_match: Option<String>,
+    /// Optional Bearer token supplied for a route that requires authentication.
+    pub(super) authorization: Option<String>,
+    /// Optional refresh token supplied by Orni's HttpOnly cookie.
+    pub(super) refresh_cookie: Option<String>,
+    /// Browser origin for an explicit cross-origin request.
+    pub(super) origin: Option<String>,
+    /// Browser-requested method during a CORS preflight request.
+    pub(super) access_control_request_method: Option<String>,
+    /// Browser-requested headers during a CORS preflight request.
+    pub(super) access_control_request_headers: Option<String>,
     pub(super) body: String,
     pub(super) close_connection: bool,
 }
@@ -49,11 +61,21 @@ impl RequestReadError {
             message: message.into(),
         }
     }
+
+    /// Reports a declared request body that exceeds the application's boundary.
+    pub(super) fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: 413,
+            code: "ORNI_HTTP_PAYLOAD_TOO_LARGE",
+            message: message.into(),
+        }
+    }
 }
 
 /// Reads a bounded HTTP/1.1 request, including a JSON body when present.
 pub(super) fn read_request(
     reader: &mut BufReader<TcpStream>,
+    maximum_body_bytes: usize,
 ) -> Result<Option<HttpRequest>, RequestReadError> {
     let Some(request_line) = read_bounded_line(reader, MAX_REQUEST_LINE_BYTES)? else {
         return Ok(None);
@@ -63,6 +85,13 @@ pub(super) fn read_request(
     let mut content_type = None;
     let mut accept: Option<String> = None;
     let mut idempotency_key: Option<String> = None;
+    let mut if_match: Option<String> = None;
+    let mut if_none_match: Option<String> = None;
+    let mut authorization: Option<String> = None;
+    let mut cookie: Option<String> = None;
+    let mut origin: Option<String> = None;
+    let mut access_control_request_method: Option<String> = None;
+    let mut access_control_request_headers: Option<String> = None;
     let mut close_connection = false;
     let mut header_bytes = request_line.len();
     let mut header_count = 0_usize;
@@ -136,13 +165,72 @@ pub(super) fn read_request(
                 ));
             }
         }
+        if name.eq_ignore_ascii_case("if-match")
+            && if_match.replace(value.trim().to_owned()).is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple If-Match headers",
+            ));
+        }
+        if name.eq_ignore_ascii_case("if-none-match") {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(RequestReadError::invalid(
+                    "If-None-Match must contain at least one entity tag",
+                ));
+            }
+            match &mut if_none_match {
+                Some(existing) => {
+                    existing.push(',');
+                    existing.push_str(value);
+                }
+                None => if_none_match = Some(value.to_owned()),
+            }
+        }
+        if name.eq_ignore_ascii_case("authorization")
+            && authorization.replace(value.trim().to_owned()).is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple Authorization headers",
+            ));
+        }
+        if name.eq_ignore_ascii_case("cookie") && cookie.replace(value.trim().to_owned()).is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple Cookie headers",
+            ));
+        }
+        if name.eq_ignore_ascii_case("origin") && origin.replace(value.trim().to_owned()).is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple Origin headers",
+            ));
+        }
+        if name.eq_ignore_ascii_case("access-control-request-method")
+            && access_control_request_method
+                .replace(value.trim().to_owned())
+                .is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple Access-Control-Request-Method headers",
+            ));
+        }
+        if name.eq_ignore_ascii_case("access-control-request-headers")
+            && access_control_request_headers
+                .replace(value.trim().to_owned())
+                .is_some()
+        {
+            return Err(RequestReadError::invalid(
+                "request contains multiple Access-Control-Request-Headers headers",
+            ));
+        }
         if name.eq_ignore_ascii_case("connection") && value.trim().eq_ignore_ascii_case("close") {
             close_connection = true;
         }
     }
-    if content_length > MAX_REQUEST_BYTES {
-        return Err(RequestReadError::invalid(format!(
-            "request body exceeds the {MAX_REQUEST_BYTES}-byte limit"
+    if content_length > maximum_body_bytes {
+        return Err(RequestReadError::payload_too_large(format!(
+            "request body exceeds the {maximum_body_bytes}-byte limit"
         )));
     }
     let mut body = vec![0; content_length];
@@ -178,9 +266,39 @@ pub(super) fn read_request(
         content_type,
         accept,
         idempotency_key,
+        if_match,
+        if_none_match,
+        authorization,
+        refresh_cookie: refresh_cookie(cookie.as_deref())?,
+        origin,
+        access_control_request_method,
+        access_control_request_headers,
         body,
         close_connection: close_connection || is_http_1_0,
     }))
+}
+
+/// Reads the framework refresh token without exposing arbitrary cookies to routes.
+fn refresh_cookie(header: Option<&str>) -> Result<Option<String>, RequestReadError> {
+    let Some(header) = header else {
+        return Ok(None);
+    };
+    let mut token = None;
+    for part in header.split(';') {
+        let Some((name, value)) = part.trim().split_once('=') else {
+            continue;
+        };
+        if name.trim() == "orni_refresh" {
+            let value = value.trim();
+            if value.is_empty() || value.len() > 2_048 || token.replace(value.to_owned()).is_some()
+            {
+                return Err(RequestReadError::invalid(
+                    "orni_refresh cookie must be one bounded value",
+                ));
+            }
+        }
+    }
+    Ok(token)
 }
 
 /// Reads one UTF-8 HTTP line without allowing an unbounded allocation.
@@ -229,5 +347,20 @@ fn read_bounded_line(
                 .map(Some)
                 .map_err(|_| RequestReadError::invalid("request headers must be valid UTF-8"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresh_cookie;
+
+    #[test]
+    fn extracts_only_the_framework_refresh_cookie() {
+        assert!(matches!(
+            refresh_cookie(Some("theme=dark; orni_refresh=token-value; locale=en")),
+            Ok(Some(token)) if token == "token-value"
+        ));
+        assert!(matches!(refresh_cookie(Some("theme=dark")), Ok(None)));
+        assert!(refresh_cookie(Some("orni_refresh=one; orni_refresh=two")).is_err());
     }
 }

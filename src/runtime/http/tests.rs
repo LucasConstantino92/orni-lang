@@ -1,6 +1,7 @@
 use super::{
     ExecutionLimits, HttpResponse, memory_stores, route_requires_json_body, route_response,
-    route_response_with_body, route_response_with_stores, route_table,
+    route_response_with_body, route_response_with_stores,
+    route_response_with_stores_and_expected_version, route_table,
 };
 
 #[test]
@@ -629,7 +630,10 @@ fn rejects_duplicate_unique_fields_and_sets_a_location_for_created_resources() {
         .to_owned();
     assert_eq!(
         first.headers,
-        vec![("Location".to_owned(), format!("/users/{id}"))]
+        vec![
+            ("ETag".to_owned(), "\"1\"".to_owned()),
+            ("Location".to_owned(), format!("/users/{id}")),
+        ]
     );
 
     let duplicate = route_response_with_stores(
@@ -669,6 +673,88 @@ fn rejects_duplicate_unique_fields_and_sets_a_location_for_created_resources() {
         ExecutionLimits::default(),
     );
     assert_eq!(conflict.status, 409);
+}
+
+#[test]
+fn store_updates_reject_stale_entity_tags_without_losing_the_latest_value() {
+    let program = crate::compile(
+        r#"
+            model User { id: uuid; name: string<80>; }
+            model CreateUser { name: string<80>; }
+            model UpdateUser { name: string<80>; }
+            store users: User;
+            func create(input: CreateUser) -> response { return users.create(input); }
+            func find(id: uuid) -> response { return users.find(id); }
+            func replace(id: uuid, input: UpdateUser) -> response { return users.replace(id, input); }
+            route post "/users" => create;
+            route get "/users/:id" => find;
+            route put "/users/:id" => replace;
+        "#,
+    )
+    .expect("an ETag CRUD application should compile");
+    let routes = route_table(&program);
+    let stores = memory_stores(&program);
+    let created = route_response_with_stores(
+        "POST",
+        "/users",
+        r#"{"name":"First"}"#,
+        &program,
+        &routes,
+        stores.clone(),
+        ExecutionLimits::default(),
+    );
+    let id = serde_json::from_str::<serde_json::Value>(&created.body)
+        .expect("created JSON should be valid")
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .expect("created JSON should contain an id")
+        .to_owned();
+    assert!(
+        created
+            .headers
+            .contains(&("ETag".to_owned(), "\"1\"".to_owned()))
+    );
+
+    let updated = route_response_with_stores_and_expected_version(
+        "PUT",
+        &format!("/users/{id}"),
+        r#"{"name":"Current"}"#,
+        &program,
+        &routes,
+        stores.clone(),
+        ExecutionLimits::default(),
+        Some(1),
+    );
+    assert_eq!(updated.status, 200);
+    assert_eq!(
+        updated.headers,
+        vec![("ETag".to_owned(), "\"2\"".to_owned())]
+    );
+
+    let stale = route_response_with_stores_and_expected_version(
+        "PUT",
+        &format!("/users/{id}"),
+        r#"{"name":"Stale"}"#,
+        &program,
+        &routes,
+        stores.clone(),
+        ExecutionLimits::default(),
+        Some(1),
+    );
+    assert_eq!(stale.status, 412);
+    assert!(stale.body.contains("ORNI_HTTP_PRECONDITION_FAILED"));
+
+    let found = route_response_with_stores(
+        "GET",
+        &format!("/users/{id}"),
+        "",
+        &program,
+        &routes,
+        stores,
+        ExecutionLimits::default(),
+    );
+    assert!(found.body.contains("Current"));
+    assert_eq!(found.headers, vec![("ETag".to_owned(), "\"2\"".to_owned())]);
 }
 
 #[test]

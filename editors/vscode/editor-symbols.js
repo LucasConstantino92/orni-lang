@@ -120,12 +120,93 @@ const apiHelpers = {
   status: ["api.status(method, path, body?)", "Calls an application route in memory and returns its HTTP status. `method` and `path` are required strings; `body` is optional JSON text for POST, PUT, and PATCH requests."],
   body: ["api.body(method, path, body?)", "Calls an application route in memory and returns its response body as text. `method` and `path` are required strings; `body` is optional JSON text."],
   contains: ["api.contains(method, path, fragment, body?)", "Calls an application route in memory and returns whether its response body contains the expected text fragment."],
+  header: ["api.header(method, path, name, body?)", "Calls an application route in memory and returns one response header. Header names are case-insensitive; an absent header returns an empty string."],
+  status_with: ["api.status_with(method, path, name, value, body?)", "Calls an application route in memory with one request header and returns its HTTP status. Use it for conditional requests such as If-None-Match."],
 };
 
 const appHelpers = {
+  cors: [
+    "app.cors(origin: string)",
+    "Allows one exact HTTP or HTTPS frontend origin to call this API from a browser. Call it again for another environment; wildcard origins are not accepted.",
+  ],
   protect: [
-    "app.protect(route: string)\napp.protect(route: string, attempts: int, seconds: int)",
-    "Temporarily blocks repeated authentication failures from one IP address on an exact sensitive route. route is required; attempts and seconds are optional only in the short form.",
+    "app.protect(route: string)\napp.protect(route: string, attempts: int, lock_time: Duration)",
+    "Temporarily blocks repeated authentication failures from one IP address on an exact sensitive route. route is required; attempts and lock_time are optional only in the short form.",
+  ],
+  auth: [
+    "app.auth(secret: string, access_time: Duration, refresh_time?: Duration, max_sessions?: int)",
+    "Enables signed Bearer tokens with explicit lifetimes. Refresh tokens use seven days and two concurrent sessions per subject by default.",
+  ],
+  auth_env: [
+    "app.auth_env(variable: string, access_time: Duration, refresh_time?: Duration, max_sessions?: int)",
+    "Enables signed Bearer tokens using a secret read from an environment variable instead of source code.",
+  ],
+  logout: ["app.logout(route: string)", "Declares a refresh-token route that revokes all active refresh sessions for its authenticated subject."],
+  body_limit: ["app.body_limit(limit: Size)", "Sets the maximum accepted HTTP request body size for this application."],
+  cache_limit: ["app.cache_limit(limit: Size)", "Sets the maximum combined memory retained by the successful GET response cache."],
+  require_auth: [
+    "app.require_auth(route: string)",
+    "Requires a valid Bearer token for every HTTP method on one declared route. The route can read its validated subject with auth.user().",
+  ],
+  require_refresh: [
+    "app.require_refresh(route: string)",
+    "Accepts only a valid refresh token on one token-exchange route. The handler calls auth.refresh() to issue a new access token.",
+  ],
+};
+
+const authHelpers = {
+  token: [
+    "auth.token(subject: string)",
+    "Issues a signed, expiring Bearer token for one subject. Use it only after your login flow has verified credentials.",
+  ],
+  user: [
+    "auth.user()",
+    "Returns the authenticated token subject for the current protected route. A missing or invalid Bearer token returns 401 Unauthorized.",
+  ],
+  refresh_token: [
+    "auth.refresh_token(subject: string)",
+    "Issues a longer-lived signed refresh token. Send it only through a secure transport such as an HttpOnly cookie in production.",
+  ],
+  refresh: [
+    "auth.refresh()",
+    "Exchanges the validated refresh token from the current request for a new short-lived access token.",
+  ],
+  cookie: [
+    "auth.cookie(response: response, refresh_token: string)",
+    "Adds the refresh token as an HttpOnly, Secure, SameSite=Strict cookie with the configured refresh lifetime.",
+  ],
+};
+
+const appHelperGuidance = {
+  cors: [
+    "CORS is disabled until at least one origin is declared.",
+    "Origins must be exact HTTP or HTTPS origins without paths or wildcards. Call app.cors once per allowed frontend environment.",
+    "Orni handles OPTIONS preflight automatically and allows only route methods plus Authorization, Content-Type, If-Match, If-None-Match, and Idempotency-Key.",
+  ],
+  protect: [
+    "The one-argument form allows 5 failed 401 or 403 responses, then locks the route for 900 seconds.",
+    "Use route, attempts, and lock_time as named arguments. lock_time must be a Duration such as Duration(minutes: 15).",
+    "A successful response clears prior failures. The client receives 429 without account-existence details while locked.",
+  ],
+  auth: [
+    "Token format",
+    "Orni signs compact Bearer tokens with HMAC-SHA256 and checks their expiry before a protected handler runs.",
+    "Secret safety",
+    "Use a unique secret outside source control in production. Orni does not store passwords or user records in this first authentication layer.",
+  ],
+  auth_env: ["Environment secret", "The variable must be set before the server starts and its value must contain at least 16 UTF-8 bytes."],
+  logout: ["Session revocation", "The route requires a refresh token and invalidates every active refresh session for that subject."],
+  body_limit: ["Resource boundary", "Use a Size value such as Size(megabytes: 2). Requests larger than this limit are rejected before JSON parsing."],
+  cache_limit: ["Resource boundary", "Use a Size value such as Size(megabytes: 16). Orni evicts the oldest cached GET responses before retained memory exceeds the limit."],
+  require_auth: [
+    "Protection",
+    "Unauthenticated requests receive a neutral 401 response and a WWW-Authenticate: Bearer header before the route handler runs.",
+    "Handler access",
+    "Call auth.user() inside the protected handler to read the validated subject string.",
+  ],
+  require_refresh: [
+    "Token separation",
+    "A refresh token cannot access app.require_auth routes. It is accepted only by a route explicitly declared with app.require_refresh.",
   ],
 };
 
@@ -133,6 +214,8 @@ const apiHelperGuidance = {
   status: ["Parameters", "method and path are required strings. body is optional JSON text for requests that accept a model body.", "Returns", "The numeric HTTP status returned by the route without opening a TCP listener."],
   body: ["Parameters", "method and path are required strings. body is optional JSON text for requests that accept a model body.", "Returns", "The response body as text. Use it to assert JSON or plain-text API output."],
   contains: ["Parameters", "method, path, and fragment are required strings. body is optional JSON text.", "Returns", "true when the response body includes the expected fragment, without opening a TCP listener."],
+  header: ["Parameters", "method, path, and the response header name are required strings. body is optional JSON text.", "Returns", "The response header value. Header lookup ignores casing and returns an empty string when the header is absent."],
+  status_with: ["Parameters", "method, path, request header name, and request header value are required strings. body is optional JSON text.", "Returns", "The numeric HTTP status after calling the route with that request header. If-None-Match can verify a 304 response in an Orni test."],
 };
 
 const storeHelpers = {
@@ -178,6 +261,62 @@ const backendSymbols = {
   "app.protect": {
     path: ["src", "runtime", "http", "server.rs"],
     needle: "struct RouteGuard {",
+  },
+  "app.cors": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if name == "app.cors" {',
+  },
+  "app.auth": {
+    path: ["src", "runtime", "http", "auth.rs"],
+    needle: "pub(crate) fn issue",
+  },
+  "app.auth_env": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if name == "app.auth_env" {',
+  },
+  "app.logout": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "fn revoke_subject",
+  },
+  "app.body_limit": {
+    path: ["src", "runtime", "http", "request.rs"],
+    needle: "maximum_body_bytes",
+  },
+  "app.cache_limit": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "struct ResponseCache",
+  },
+  "app.require_auth": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "struct AuthenticationPolicy",
+  },
+  "app.require_refresh": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "fn requires_refresh",
+  },
+  auth: {
+    path: ["src", "runtime", "http", "auth.rs"],
+    needle: "pub(crate) fn validate",
+  },
+  "auth.token": {
+    path: ["src", "runtime", "http", "auth.rs"],
+    needle: "pub(crate) fn issue",
+  },
+  "auth.user": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if name == "auth.user" {',
+  },
+  "auth.refresh_token": {
+    path: ["src", "runtime", "http", "auth.rs"],
+    needle: "pub(crate) fn issue_refresh",
+  },
+  "auth.refresh": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if name == "auth.refresh" {',
+  },
+  "auth.cookie": {
+    path: ["src", "runtime", "interpreter", "calls.rs"],
+    needle: 'if name == "auth.cookie" {',
   },
   api: {
     path: ["src", "runtime", "http.rs"],
@@ -299,6 +438,14 @@ const backendSymbols = {
     path: ["src", "runtime", "interpreter", "calls.rs"],
     needle: '"api.status" | "api.body" | "api.contains"',
   },
+  "api.header": {
+    path: ["src", "runtime", "http.rs"],
+    needle: "pub(crate) fn api_test_request",
+  },
+  "api.status_with": {
+    path: ["src", "runtime", "http.rs"],
+    needle: "pub(crate) fn api_test_request",
+  },
   "store.create": {
     path: ["src", "runtime", "interpreter", "stores.rs"],
     needle: '"create" => {',
@@ -338,13 +485,22 @@ for (const method of ["get", "post", "put", "patch", "delete"]) {
 
 for (const typeName of [
   "string", "int", "int8", "int16", "int32", "int64",
-  "uint8", "uint16", "uint32", "uint64", "double", "bool", "char", "uuid", "unit",
+  "uint8", "uint16", "uint32", "uint64", "double", "bool", "char", "uuid", "size", "duration", "unit",
 ]) {
   backendSymbols[typeName] = {
     path: ["src", "syntax", "ast.rs"],
     needle: "pub(crate) enum TypeName {",
   };
 }
+
+backendSymbols.Size = {
+  path: ["src", "runtime", "interpreter", "calls.rs"],
+  needle: 'if name == "Size" {',
+};
+backendSymbols.Duration = {
+  path: ["src", "runtime", "core", "duration.rs"],
+  needle: "pub(crate) struct Duration;",
+};
 
 const keywordDocumentation = {
   let: "Declares a variable in the current lexical scope.",
@@ -371,7 +527,7 @@ const keywordDocumentation = {
   delete: "Declares an HTTP DELETE route.",
   assert: "Stops execution when a boolean condition is false; use it for Orni tests.",
   test: "Groups assertions into a named test scenario. A scenario passes only when every statement in its body succeeds.",
-  app: "Configures application startup from main with app.name(...), app.port(...), and app.protect(...).",
+  app: "Configures application startup from main with app.name(...), app.port(...), app.cors(...), app.protect(...), app.auth(...), and app.require_auth(...).",
 };
 
 const primitiveTypes = {
@@ -409,6 +565,44 @@ const primitiveTypes = {
     details: ["A string value assigned to uuid is parsed and validated before execution.", "HTTP CRUD stores use uuid identifiers by default."],
     example: 'let user_id: uuid = "550e8400-e29b-41d4-a716-446655440000";',
   },
+  size: {
+    signature: "final type size",
+    summary: "A non-negative byte count for memory, payload, and cache limits.",
+    details: [
+      "Create a size with Size(bytes: ...), Size(kilobytes: ...), Size(megabytes: ...), or Size(gigabytes: ...).",
+      "Orni stores the result as bytes and checks overflow instead of silently wrapping a large limit.",
+      "size is deliberately distinct from int, which prevents a raw number from being used as a resource limit by accident.",
+    ],
+    example: "let cache_limit: size = Size(megabytes: 10);\nlet buffer: size = Size(kilobytes: 256);",
+  },
+  duration: {
+    signature: "final type duration",
+    summary: "A non-negative elapsed time stored internally as milliseconds.",
+    details: [
+      "Create a duration with Duration(milliseconds: ...), Duration(seconds: ...), Duration(minutes: ...), Duration(hours: ...), or Duration(days: ...).",
+      "duration is distinct from int so time-sensitive APIs cannot accidentally receive an unlabelled number.",
+    ],
+    example: "let retry_after: duration = Duration(seconds: 30);",
+  },
+  Size: {
+    signature: "Size(bytes: int)\nSize(kilobytes: int)\nSize(megabytes: int)\nSize(gigabytes: int)",
+    summary: "Creates a checked size value from one explicit storage unit.",
+    details: [
+      "Exactly one named unit is required. Units use powers of 1024, so one megabyte is 1,048,576 bytes.",
+      "The amount must be non-negative and the resulting byte count must fit in uint64.",
+    ],
+    example: "let upload_limit: size = Size(megabytes: 10);",
+  },
+  Duration: {
+    signature: "Duration(milliseconds: int)\nDuration(seconds: int)\nDuration(minutes: int)\nDuration(hours: int)\nDuration(days: int)",
+    summary: "The native Orni duration value class. Creates a checked duration from one explicit time unit.",
+    details: [
+      "Exactly one named unit is required. Orni normalizes the result to milliseconds and checks overflow.",
+      "Use Duration whenever an Orni API expects elapsed time, token lifetime, or a lock window.",
+      "Ctrl+Click opens the native core class that documents how every unit is converted and checked.",
+    ],
+    example: "app.protect(route: \"/auth/login\", attempts: 5, lock_time: Duration(minutes: 15));",
+  },
   response: {
     summary: "An explicit HTTP result returned by a route handler.",
     details: ["Create one with response.ok, response.created, response.json, response.collection, response.not_found, and related helpers.", "response.json wraps model data in a stable { data: ... } JSON envelope while preserving a store response status.", "response.collection turns store lists into { data: [...], meta: { ... } }.", "Use response.header to attach validated HTTP headers."],
@@ -416,7 +610,7 @@ const primitiveTypes = {
   },
   api: {
     summary: "In-memory HTTP test API available through orni test.",
-    details: ["api.status and api.body execute the declared route without opening a TCP port.", "Use them only in files under tests/."],
+    details: ["api.status, api.body, api.header, and api.status_with execute the declared route without opening a TCP port.", "Use them only in files under tests/."],
     example: 'assert api.status("GET", "/health") == 200;',
   },
   unit: {
@@ -602,11 +796,19 @@ async function hoverFor(document, position) {
       signature: appHelper[0],
       origin: "orni:http",
       summary: appHelper[1],
-      details: [
-        "The one-argument form allows 5 failed 401 or 403 responses, then locks the route for 900 seconds.",
-        "Use route, attempts, and seconds as named arguments to select a positive attempt count and lock duration in seconds.",
-        "A successful response clears prior failures. The client receives 429 without account-existence details while locked.",
-      ],
+      details: appHelperGuidance[symbol.name] || [],
+      footer: "\nCtrl+Click to open its Rust implementation.",
+    });
+    return new vscode.Hover(markdown, symbol.range);
+  }
+
+  const authHelper = authHelperAt(source, symbolOffset, symbol.name);
+  if (authHelper) {
+    const markdown = new vscode.MarkdownString();
+    appendDocumentation(markdown, {
+      signature: authHelper[0],
+      origin: "orni:auth",
+      summary: authHelper[1],
       footer: "\nCtrl+Click to open its Rust implementation.",
     });
     return new vscode.Hover(markdown, symbol.range);
@@ -723,7 +925,7 @@ async function hoverFor(document, position) {
 function signatureHelpFor(document, position) {
   const source = document.getText();
   const prefix = source.slice(0, document.offsetAt(position));
-  const call = prefix.match(/((?:(?:response|api|app)\.)?[A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)$/s);
+  const call = prefix.match(/((?:(?:response|api|app|auth)\.)?[A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)$/s);
   if (!call) return undefined;
 
   const responseHelper = call[1].startsWith("response.")
@@ -744,11 +946,7 @@ function signatureHelpFor(document, position) {
     : undefined;
   if (apiHelper) {
     const signature = new vscode.SignatureInformation(apiHelper[0], apiHelper[1]);
-    signature.parameters = [
-      new vscode.ParameterInformation("method"),
-      new vscode.ParameterInformation("path"),
-      new vscode.ParameterInformation("body?"),
-    ];
+    signature.parameters = signatureParameters(apiHelper[0]);
     const help = new vscode.SignatureHelp();
     help.signatures = [signature];
     help.activeSignature = 0;
@@ -760,15 +958,39 @@ function signatureHelpFor(document, position) {
     : undefined;
   if (appHelper) {
     const signature = new vscode.SignatureInformation(appHelper[0], appHelper[1]);
-    signature.parameters = [
-      new vscode.ParameterInformation("route"),
-      new vscode.ParameterInformation("attempts?"),
-      new vscode.ParameterInformation("seconds?"),
-    ];
+    signature.parameters = signatureParameters(appHelper[0]);
     const help = new vscode.SignatureHelp();
     help.signatures = [signature];
     help.activeSignature = 0;
     help.activeParameter = Math.min((call[2].match(/,/g) || []).length, 2);
+    return help;
+  }
+  const authHelper = call[1].startsWith("auth.")
+    ? authHelpers[call[1].slice("auth.".length)]
+    : undefined;
+  if (authHelper) {
+    const signature = new vscode.SignatureInformation(authHelper[0], authHelper[1]);
+    signature.parameters = signatureParameters(authHelper[0]);
+    const help = new vscode.SignatureHelp();
+    help.signatures = [signature];
+    help.activeSignature = 0;
+    help.activeParameter = Math.min((call[2].match(/,/g) || []).length, Math.max(0, signature.parameters.length - 1));
+    return help;
+  }
+  if (call[1] === "Size" || call[1] === "Duration") {
+    const constructor = primitiveTypes[call[1]];
+    const signature = new vscode.SignatureInformation(
+      constructor.signature,
+      constructor.summary,
+    );
+    const units = call[1] === "Size"
+      ? "one named unit: bytes, kilobytes, megabytes, or gigabytes"
+      : "one named unit: milliseconds, seconds, minutes, hours, or days";
+    signature.parameters = [new vscode.ParameterInformation(units)];
+    const help = new vscode.SignatureHelp();
+    help.signatures = [signature];
+    help.activeSignature = 0;
+    help.activeParameter = 0;
     return help;
   }
 
@@ -794,6 +1016,16 @@ function signatureHelpFor(document, position) {
   return help;
 }
 
+/** Extracts readable parameter labels from a built-in signature. */
+function signatureParameters(signature) {
+  const parameters = signature.match(/\(([^)]*)\)/s)?.[1] || "";
+  return parameters
+    .split(",")
+    .map((parameter) => parameter.trim())
+    .filter(Boolean)
+    .map((parameter) => new vscode.ParameterInformation(parameter));
+}
+
 /** Returns response helper documentation only when the cursor follows response. */
 function responseHelperAt(source, usageOffset, symbolName) {
   const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
@@ -816,6 +1048,12 @@ function apiHelperAt(source, usageOffset, symbolName) {
 function appHelperAt(source, usageOffset, symbolName) {
   const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
   return /app\s*\.\s*$/.test(before) ? appHelpers[symbolName] : undefined;
+}
+
+/** Returns token helper documentation only when the cursor follows auth. */
+function authHelperAt(source, usageOffset, symbolName) {
+  const before = source.slice(Math.max(0, usageOffset - 160), usageOffset);
+  return /auth\s*\.\s*$/.test(before) ? authHelpers[symbolName] : undefined;
 }
 
 /** Shows compiler-like inferred types without changing the source document. */

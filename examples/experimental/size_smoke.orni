@@ -1,0 +1,7 @@
+// Demonstrates checked, explicit resource sizes.
+
+let upload_limit: size = Size(megabytes: 10);
+let cache_budget: size = Size(kilobytes: 256);
+
+print upload_limit;
+print cache_budget;

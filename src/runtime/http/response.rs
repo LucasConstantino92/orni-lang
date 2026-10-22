@@ -77,6 +77,32 @@ impl HttpResponse {
         self.headers.push((name, value));
         self
     }
+
+    /// Converts a successful tagged representation into a conditional GET response.
+    pub(super) fn not_modified_if_matches(mut self, if_none_match: Option<&str>) -> Self {
+        let Some(if_none_match) = if_none_match else {
+            return self;
+        };
+        if self.status != 200 {
+            return self;
+        }
+        let Some((_, entity_tag)) = self
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("etag"))
+        else {
+            return self;
+        };
+        let matches = if_none_match
+            .split(',')
+            .map(str::trim)
+            .any(|candidate| candidate == "*" || candidate == entity_tag);
+        if matches {
+            self.status = 304;
+            self.body.clear();
+        }
+        self
+    }
 }
 
 /// Selects a status and serializes the route value at the HTTP boundary.
@@ -166,6 +192,7 @@ fn response_error_code(status: u16) -> &'static str {
         403 => "ORNI_HTTP_FORBIDDEN",
         404 => "ORNI_HTTP_RESOURCE_NOT_FOUND",
         409 => "ORNI_HTTP_CONFLICT",
+        412 => "ORNI_HTTP_PRECONDITION_FAILED",
         _ => "ORNI_HTTP_INTERNAL_ERROR",
     }
 }
@@ -184,6 +211,8 @@ fn model_json(value: &Value) -> serde_json::Value {
         Value::Bool(value) => serde_json::Value::Bool(*value),
         Value::Char(value) => serde_json::Value::String(value.to_string()),
         Value::Uuid(value) => serde_json::Value::String(value.to_string()),
+        Value::Size(bytes) => serde_json::Value::Number((*bytes).into()),
+        Value::Duration(milliseconds) => serde_json::Value::Number((*milliseconds).into()),
         Value::Model { fields, .. } => serde_json::Value::Object(
             fields
                 .iter()

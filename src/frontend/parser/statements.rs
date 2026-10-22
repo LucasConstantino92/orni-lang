@@ -635,6 +635,8 @@ impl Parser {
             "bool" => Ok(TypeName::Bool),
             "char" => Ok(TypeName::Char),
             "uuid" => Ok(TypeName::Uuid),
+            "size" => Ok(TypeName::Size),
+            "duration" => Ok(TypeName::Duration),
             "response" => Ok(TypeName::Response),
             "unit" => Ok(TypeName::Unit),
             _ if self.model_names.contains(name) => Ok(TypeName::Model(name.to_owned())),

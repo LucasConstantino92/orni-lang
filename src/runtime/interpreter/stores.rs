@@ -11,6 +11,13 @@ use crate::{
 use super::{Interpreter, identifier_name, runtime_error};
 
 impl Interpreter {
+    /// Stops a write when the client supplied an entity tag for an older resource revision.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn check_expected_store_version(&self, store: &MemoryStore, id: uuid::Uuid) -> Option<Value> {
+        let expected = self.expected_store_version?;
+        (store.versions.get(&id).copied() != Some(expected)).then(precondition_failed)
+    }
+
     /// Performs one CRUD operation against an HTTP-owned in-memory store.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn store_call(
@@ -301,10 +308,11 @@ impl Interpreter {
                     ))));
                 }
                 store.values.insert(id, model.clone());
+                store.versions.insert(id, 1);
                 Value::Response {
                     status: 201,
                     body: Box::new(model),
-                    headers: Vec::new(),
+                    headers: vec![("ETag".to_owned(), entity_tag(1))],
                     json_envelope: false,
                 }
             }
@@ -320,7 +328,12 @@ impl Interpreter {
                     .map(|model| Value::Response {
                         status: 200,
                         body: Box::new(model),
-                        headers: Vec::new(),
+                        headers: store
+                            .versions
+                            .get(&id)
+                            .copied()
+                            .map(|version| vec![("ETag".to_owned(), entity_tag(version))])
+                            .unwrap_or_default(),
                         json_envelope: false,
                     })
                     .unwrap_or_else(|| Value::Response {
@@ -349,6 +362,9 @@ impl Interpreter {
                     name: store.model.clone(),
                     fields,
                 };
+                if let Some(response) = self.check_expected_store_version(store, id) {
+                    return Ok(Some(response));
+                }
                 if let Some(field) = duplicate_unique_field(store, &model, Some(id)) {
                     return Ok(Some(conflict_error(&format!(
                         "a resource with this '{field}' already exists"
@@ -358,10 +374,11 @@ impl Interpreter {
                     store.values.entry(id)
                 {
                     entry.insert(model.clone());
+                    let version = increment_store_version(store, id);
                     Value::Response {
                         status: 200,
                         body: Box::new(model),
-                        headers: Vec::new(),
+                        headers: vec![("ETag".to_owned(), entity_tag(version))],
                         json_envelope: false,
                     }
                 } else {
@@ -396,6 +413,9 @@ impl Interpreter {
                         json_envelope: false,
                     }));
                 };
+                if let Some(response) = self.check_expected_store_version(store, id) {
+                    return Ok(Some(response));
+                }
                 let mut updated_fields = current.clone();
                 for (name, value) in fields {
                     updated_fields.insert(name, value);
@@ -410,6 +430,7 @@ impl Interpreter {
                     ))));
                 }
                 store.values.insert(id, updated);
+                let version = increment_store_version(store, id);
                 Value::Response {
                     status: 200,
                     body: Box::new(
@@ -419,13 +440,17 @@ impl Interpreter {
                             .cloned()
                             .expect("the stored value exists"),
                     ),
-                    headers: Vec::new(),
+                    headers: vec![("ETag".to_owned(), entity_tag(version))],
                     json_envelope: false,
                 }
             }
             "delete" => match values.first() {
                 Some(Value::Uuid(id)) => {
+                    if let Some(response) = self.check_expected_store_version(store, *id) {
+                        return Ok(Some(response));
+                    }
                     if store.values.remove(id).is_some() {
+                        store.versions.remove(id);
                         Value::Response {
                             status: 204,
                             body: Box::new(Value::Unit),
@@ -447,6 +472,35 @@ impl Interpreter {
         };
         Ok(Some(response))
     }
+}
+
+/// Formats an opaque strong entity tag for one in-memory resource revision.
+fn entity_tag(version: u64) -> String {
+    format!("\"{version}\"")
+}
+
+/// Produces the standard HTTP precondition response for a stale client representation.
+fn precondition_failed() -> Value {
+    Value::Response {
+        status: 412,
+        body: Box::new(Value::String(
+            "Resource has changed. Fetch the latest representation and try again.".into(),
+        )),
+        headers: Vec::new(),
+        json_envelope: false,
+    }
+}
+
+/// Advances a resource revision after a successful in-memory mutation.
+fn increment_store_version(store: &mut MemoryStore, id: uuid::Uuid) -> u64 {
+    let version = store
+        .versions
+        .get(&id)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1);
+    store.versions.insert(id, version);
+    version
 }
 
 fn pagination_integer(value: i128) -> Value {

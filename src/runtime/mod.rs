@@ -1,5 +1,6 @@
 //! Runtime state and evaluation for validated Orni programs.
 
+pub(crate) mod core;
 mod environment;
 #[cfg(not(target_arch = "wasm32"))]
 mod http;
@@ -11,6 +12,8 @@ pub(crate) struct MemoryStore {
     pub(crate) model: String,
     pub(crate) fields: Vec<crate::syntax::ModelField>,
     pub(crate) values: std::collections::BTreeMap<uuid::Uuid, crate::syntax::Value>,
+    /// Monotonically increasing revisions used by HTTP ETag preconditions.
+    pub(crate) versions: std::collections::BTreeMap<uuid::Uuid, u64>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -23,7 +26,7 @@ pub(crate) use http::serve;
 pub(crate) use http::{ApiTestContext, api_test_context, api_test_request};
 pub(crate) use interpreter::Interpreter;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use interpreter::RouteProtection;
+pub(crate) use interpreter::{ApplicationConfig, AuthConfig, RouteProtection};
 pub use limits::ExecutionLimits;
 
 /// Native HTTP server boundaries that protect local application availability.
@@ -46,6 +49,10 @@ pub struct HttpLimits {
     pub cache_ttl_seconds: u64,
     /// Maximum retained successful GET responses.
     pub max_cache_entries: usize,
+    /// Maximum accepted HTTP request body size, in bytes.
+    pub max_request_bytes: usize,
+    /// Maximum combined retained GET response size, in bytes.
+    pub max_cache_bytes: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,6 +67,8 @@ impl Default for HttpLimits {
             request_window_seconds: 60,
             cache_ttl_seconds: 15,
             max_cache_entries: 256,
+            max_request_bytes: 1_048_576,
+            max_cache_bytes: 16 * 1_048_576,
         }
     }
 }

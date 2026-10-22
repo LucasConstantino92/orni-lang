@@ -5,6 +5,9 @@ use crate::{
     syntax::{Expression, IntegerType, Parameter, Token, TypeName, Value},
 };
 
+use super::super::core::duration::{Duration as NativeDuration, DurationError};
+#[cfg(not(target_arch = "wasm32"))]
+use super::super::http::auth;
 #[cfg(not(target_arch = "wasm32"))]
 use super::api_test_request;
 use super::{
@@ -27,17 +30,93 @@ impl Interpreter {
             );
         };
         let name = identifier_name(name_token);
-        if matches!(name, "api.status" | "api.body" | "api.contains") {
-            let valid_arity = if name == "api.contains" {
-                (3..=4).contains(&arguments.len())
-            } else {
-                (2..=3).contains(&arguments.len())
+        if name == "Size" {
+            let [multiplier, amount] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "Size expects exactly one named unit argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Integer {
+                value: multiplier, ..
+            } = self.evaluate(multiplier)?
+            else {
+                unreachable!("the parser stores the Size unit as an integer multiplier")
+            };
+            let Value::Integer { value: amount, .. } = self.evaluate(amount)? else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "Size requires a non-negative integer amount",
+                )
+                .with_code("ORNI-E107"));
+            };
+            let amount = u64::try_from(amount).map_err(|_| {
+                runtime_error(
+                    closing_parenthesis,
+                    "Size must fit in an unsigned 64-bit byte count",
+                )
+                .with_code("ORNI-E104")
+            })?;
+            let multiplier = u64::try_from(multiplier).expect("Size multipliers are positive");
+            let bytes = amount.checked_mul(multiplier).ok_or_else(|| {
+                runtime_error(
+                    closing_parenthesis,
+                    "Size exceeds the maximum unsigned 64-bit byte count",
+                )
+                .with_code("ORNI-E104")
+            })?;
+            return Ok(Value::Size(bytes));
+        }
+        if name == "Duration" {
+            let [multiplier, amount] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "Duration expects exactly one named unit argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Integer {
+                value: multiplier, ..
+            } = self.evaluate(multiplier)?
+            else {
+                unreachable!("the parser stores the Duration unit as an integer multiplier")
+            };
+            let Value::Integer { value: amount, .. } = self.evaluate(amount)? else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "Duration requires a non-negative integer amount",
+                )
+                .with_code("ORNI-E107"));
+            };
+            let milliseconds = NativeDuration::from_unit(amount, multiplier).map_err(|error| {
+                let message = match error {
+                    DurationError::Negative => "Duration requires a non-negative integer amount",
+                    DurationError::OutOfRange => {
+                        "Duration must fit in an unsigned 64-bit millisecond count"
+                    }
+                    DurationError::Overflow => {
+                        "Duration exceeds the maximum unsigned 64-bit millisecond count"
+                    }
+                };
+                runtime_error(closing_parenthesis, message).with_code("ORNI-E104")
+            })?;
+            return Ok(Value::Duration(milliseconds));
+        }
+        if matches!(
+            name,
+            "api.status" | "api.body" | "api.contains" | "api.header" | "api.status_with"
+        ) {
+            let valid_arity = match name {
+                "api.contains" | "api.header" => (3..=4).contains(&arguments.len()),
+                "api.status_with" => (4..=5).contains(&arguments.len()),
+                _ => (2..=3).contains(&arguments.len()),
             };
             if !valid_arity {
-                let expected = if name == "api.contains" {
-                    "3 or 4"
-                } else {
-                    "2 or 3"
+                let expected = match name {
+                    "api.contains" | "api.header" => "3 or 4",
+                    "api.status_with" => "4 or 5",
+                    _ => "2 or 3",
                 };
                 return Err(runtime_error(
                     closing_parenthesis,
@@ -62,7 +141,7 @@ impl Interpreter {
                 )
                 .with_code("ORNI-E107"));
             };
-            let (fragment, body) = if name == "api.contains" {
+            let (fragment, response_header, request_header, body) = if name == "api.contains" {
                 let [Value::String(fragment), body @ ..] = remaining else {
                     return Err(runtime_error(
                         closing_parenthesis,
@@ -81,7 +160,52 @@ impl Interpreter {
                         .with_code("ORNI-E107"));
                     }
                 };
-                (Some(fragment), body)
+                (Some(fragment), None, None, body)
+            } else if name == "api.header" {
+                let [Value::String(response_header), body @ ..] = remaining else {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "api.header requires a string header name",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                let body = match body {
+                    [] => "",
+                    [Value::String(body)] => body,
+                    _ => {
+                        return Err(runtime_error(
+                            closing_parenthesis,
+                            "api request body must be a string",
+                        )
+                        .with_code("ORNI-E107"));
+                    }
+                };
+                (None, Some(response_header), None, body)
+            } else if name == "api.status_with" {
+                let [
+                    Value::String(header_name),
+                    Value::String(header_value),
+                    body @ ..,
+                ] = remaining
+                else {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "api.status_with requires string header name and value",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                let body = match body {
+                    [] => "",
+                    [Value::String(body)] => body,
+                    _ => {
+                        return Err(runtime_error(
+                            closing_parenthesis,
+                            "api request body must be a string",
+                        )
+                        .with_code("ORNI-E107"));
+                    }
+                };
+                (None, None, Some((header_name, header_value)), body)
             } else {
                 let body = match remaining {
                     [] => "",
@@ -94,26 +218,53 @@ impl Interpreter {
                         .with_code("ORNI-E107"));
                     }
                 };
-                (None, body)
+                (None, None, None, body)
             };
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(context) = &self.api_test {
-                let (status, response_body) = api_test_request(context, method, path, body);
+                let response = api_test_request(
+                    context,
+                    method,
+                    path,
+                    body,
+                    request_header.map(|(name, value)| (name.as_ref(), value.as_ref())),
+                );
                 return Ok(if name == "api.status" {
                     Value::Integer {
-                        value: status.into(),
-                        integer_type: IntegerType::smallest_signed(status.into()),
+                        value: response.status.into(),
+                        integer_type: IntegerType::smallest_signed(response.status.into()),
                     }
                 } else if name == "api.body" {
-                    Value::String(response_body.into())
+                    Value::String(response.body.into())
+                } else if name == "api.header" {
+                    Value::String(
+                        response
+                            .header(response_header.expect("header has a name").as_ref())
+                            .unwrap_or_default()
+                            .into(),
+                    )
+                } else if name == "api.status_with" {
+                    Value::Integer {
+                        value: response.status.into(),
+                        integer_type: IntegerType::smallest_signed(response.status.into()),
+                    }
                 } else {
                     Value::Bool(
-                        response_body.contains(fragment.expect("contains has a fragment").as_ref()),
+                        response
+                            .body
+                            .contains(fragment.expect("contains has a fragment").as_ref()),
                     )
                 });
             }
             #[cfg(target_arch = "wasm32")]
-            let _ = (method, path, fragment, body);
+            let _ = (
+                method,
+                path,
+                fragment,
+                response_header,
+                request_header,
+                body,
+            );
             return Err(runtime_error(
                 closing_parenthesis,
                 "api helpers are available only through 'orni test' in a project",
@@ -331,6 +482,55 @@ impl Interpreter {
                 json_envelope,
             });
         }
+        if name == "auth.cookie" {
+            let [response, token] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'auth.cookie' expects 2 arguments",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Response {
+                status,
+                body,
+                mut headers,
+                json_envelope,
+            } = self.evaluate(response)?
+            else {
+                return Err(runtime_error(
+                    expression_token(response).unwrap_or(closing_parenthesis),
+                    "auth.cookie requires a response as its first argument",
+                )
+                .with_code("ORNI-E107"));
+            };
+            let Value::String(token) = self.evaluate(token)? else {
+                return Err(runtime_error(
+                    expression_token(token).unwrap_or(closing_parenthesis),
+                    "auth.cookie requires a refresh token string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let lifetime = self
+                .application
+                .auth
+                .as_ref()
+                .map(|configuration| configuration.refresh_duration_milliseconds / 1_000)
+                .unwrap_or(604_800);
+            #[cfg(target_arch = "wasm32")]
+            let lifetime = 604_800;
+            let cookie = format!(
+                "orni_refresh={token}; Max-Age={lifetime}; HttpOnly; Secure; SameSite=Strict; Path=/auth"
+            );
+            headers.retain(|(name, _)| !name.eq_ignore_ascii_case("set-cookie"));
+            headers.push(("Set-Cookie".to_owned(), cookie));
+            return Ok(Value::Response {
+                status,
+                body,
+                headers,
+                json_envelope,
+            });
+        }
         if name == "app.name" {
             let [value] = arguments else {
                 return Err(runtime_error(
@@ -387,6 +587,41 @@ impl Interpreter {
             let _ = port;
             return Ok(Value::Unit);
         }
+        if matches!(name, "app.body_limit" | "app.cache_limit") {
+            let [value] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    &format!("function '{name}' expects 1 argument"),
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Size(bytes) = self.evaluate(value)? else {
+                return Err(runtime_error(
+                    expression_token(value).unwrap_or(closing_parenthesis),
+                    &format!("{name} requires a Size value"),
+                )
+                .with_code("ORNI-E107"));
+            };
+            let bytes = usize::try_from(bytes)
+                .ok()
+                .filter(|bytes| *bytes > 0)
+                .ok_or_else(|| {
+                    runtime_error(
+                        expression_token(value).unwrap_or(closing_parenthesis),
+                        &format!("{name} requires a positive platform-sized byte count"),
+                    )
+                    .with_code("ORNI-E107")
+                })?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if name == "app.body_limit" {
+                self.application.body_limit_bytes = Some(bytes);
+            } else {
+                self.application.cache_limit_bytes = Some(bytes);
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = bytes;
+            return Ok(Value::Unit);
+        }
         if name == "app.protect" {
             if !matches!(arguments.len(), 1 | 3) {
                 return Err(runtime_error(
@@ -402,7 +637,7 @@ impl Interpreter {
                 )
                 .with_code("ORNI-E107"));
             };
-            let (maximum_attempts, lockout_seconds) = if arguments.len() == 3 {
+            let (maximum_attempts, lockout_milliseconds) = if arguments.len() == 3 {
                 let Value::Integer {
                     value: attempts, ..
                 } = self.evaluate(&arguments[1])?
@@ -413,19 +648,19 @@ impl Interpreter {
                     )
                     .with_code("ORNI-E107"));
                 };
-                let Value::Integer { value: seconds, .. } = self.evaluate(&arguments[2])? else {
+                let Value::Duration(lockout_milliseconds) = self.evaluate(&arguments[2])? else {
                     return Err(runtime_error(
                         closing_parenthesis,
-                        "app.protect limits must be integers",
+                        "app.protect lock_time must be a Duration",
                     )
                     .with_code("ORNI-E107"));
                 };
-                (usize::try_from(attempts).ok(), u64::try_from(seconds).ok())
+                (usize::try_from(attempts).ok(), Some(lockout_milliseconds))
             } else {
-                (Some(5), Some(900))
+                (Some(5), Some(900_000))
             };
-            let (Some(maximum_attempts), Some(lockout_seconds)) =
-                (maximum_attempts, lockout_seconds)
+            let (Some(maximum_attempts), Some(lockout_milliseconds)) =
+                (maximum_attempts, lockout_milliseconds)
             else {
                 return Err(runtime_error(
                     closing_parenthesis,
@@ -433,7 +668,7 @@ impl Interpreter {
                 )
                 .with_code("ORNI-E107"));
             };
-            if !path.starts_with('/') || maximum_attempts == 0 || lockout_seconds == 0 {
+            if !path.starts_with('/') || maximum_attempts == 0 || lockout_milliseconds == 0 {
                 return Err(runtime_error(
                     closing_parenthesis,
                     "app.protect requires an absolute path and positive limits",
@@ -446,11 +681,414 @@ impl Interpreter {
                 .push(super::RouteProtection {
                     path: path.to_string(),
                     maximum_attempts,
-                    lockout_seconds,
+                    lockout_milliseconds,
                 });
             #[cfg(target_arch = "wasm32")]
-            let _ = (path, maximum_attempts, lockout_seconds);
+            let _ = (path, maximum_attempts, lockout_milliseconds);
             return Ok(Value::Unit);
+        }
+        if name == "app.cors" {
+            let [origin] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.cors' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let origin_token = expression_token(origin).unwrap_or(closing_parenthesis);
+            let Value::String(origin) = self.evaluate(origin)? else {
+                return Err(runtime_error(
+                    origin_token,
+                    "app.cors requires an HTTP or HTTPS origin string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if !is_valid_cors_origin(&origin) {
+                return Err(runtime_error(
+                    origin_token,
+                    "app.cors requires an HTTP or HTTPS origin without a path",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if !self
+                .application
+                .cors_origins
+                .iter()
+                .any(|existing| existing == &*origin)
+            {
+                self.application.cors_origins.push(origin.to_string());
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = origin;
+            return Ok(Value::Unit);
+        }
+        if name == "app.auth_env" {
+            if !matches!(arguments.len(), 2..=4) {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.auth_env' expects 2, 3, or 4 arguments",
+                )
+                .with_code("ORNI-E108"));
+            }
+            let Value::String(variable) = self.evaluate(&arguments[0])? else {
+                return Err(runtime_error(
+                    expression_token(&arguments[0]).unwrap_or(closing_parenthesis),
+                    "app.auth_env requires an environment variable name",
+                )
+                .with_code("ORNI-E107"));
+            };
+            let access = positive_duration(
+                self.evaluate(&arguments[1])?,
+                closing_parenthesis,
+                "app.auth_env access_time",
+            )?;
+            let refresh = arguments
+                .get(2)
+                .map(|argument| self.evaluate(argument))
+                .transpose()?
+                .map(|value| {
+                    positive_duration(value, closing_parenthesis, "app.auth_env refresh_time")
+                })
+                .transpose()?
+                .unwrap_or(604_800_000);
+            let sessions = arguments
+                .get(3)
+                .map(|argument| self.evaluate(argument))
+                .transpose()?
+                .and_then(|value| match value {
+                    Value::Integer { value, .. } => {
+                        usize::try_from(value).ok().filter(|value| *value > 0)
+                    }
+                    _ => None,
+                })
+                .unwrap_or(2);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let secret = std::env::var(&*variable).map_err(|_| {
+                    runtime_error(
+                        closing_parenthesis,
+                        &format!("environment variable '{variable}' is not set"),
+                    )
+                    .with_code("ORNI-E107")
+                })?;
+                if secret.len() < 16 {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "app.auth_env secret must contain at least 16 UTF-8 bytes",
+                    )
+                    .with_code("ORNI-E107"));
+                }
+                self.application.auth = Some(super::AuthConfig {
+                    secret,
+                    access_duration_milliseconds: access,
+                    refresh_duration_milliseconds: refresh,
+                    maximum_sessions_per_subject: sessions,
+                });
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = (variable, access, refresh, sessions);
+            return Ok(Value::Unit);
+        }
+        if name == "app.auth" {
+            if !matches!(arguments.len(), 2..=4) {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.auth' expects 2, 3, or 4 arguments",
+                )
+                .with_code("ORNI-E108"));
+            }
+            let secret = &arguments[0];
+            let access_time = &arguments[1];
+            let secret_token = expression_token(secret).unwrap_or(closing_parenthesis);
+            let Value::String(secret) = self.evaluate(secret)? else {
+                return Err(
+                    runtime_error(secret_token, "app.auth requires a string secret")
+                        .with_code("ORNI-E107"),
+                );
+            };
+            let access_duration_milliseconds = positive_duration(
+                self.evaluate(access_time)?,
+                expression_token(access_time).unwrap_or(closing_parenthesis),
+                "app.auth access_time",
+            )?;
+            let refresh_duration_milliseconds = if let Some(refresh) = arguments.get(2) {
+                positive_duration(
+                    self.evaluate(refresh)?,
+                    expression_token(refresh).unwrap_or(closing_parenthesis),
+                    "app.auth refresh_time",
+                )?
+            } else {
+                604_800_000
+            };
+            let maximum_sessions_per_subject = if let Some(limit) = arguments.get(3) {
+                let Value::Integer { value, .. } = self.evaluate(limit)? else {
+                    return Err(runtime_error(
+                        expression_token(limit).unwrap_or(closing_parenthesis),
+                        "app.auth session limit must be a positive integer",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                usize::try_from(value)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| {
+                        runtime_error(
+                            closing_parenthesis,
+                            "app.auth session limit must be a positive integer",
+                        )
+                        .with_code("ORNI-E107")
+                    })?
+            } else {
+                2
+            };
+            if secret.len() < 16 {
+                return Err(runtime_error(
+                    secret_token,
+                    "app.auth secret must contain at least 16 UTF-8 bytes",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.application.auth = Some(super::AuthConfig {
+                    secret: secret.to_string(),
+                    access_duration_milliseconds,
+                    refresh_duration_milliseconds,
+                    maximum_sessions_per_subject,
+                });
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = (
+                secret,
+                access_duration_milliseconds,
+                refresh_duration_milliseconds,
+                maximum_sessions_per_subject,
+            );
+            return Ok(Value::Unit);
+        }
+        if name == "app.require_auth" {
+            let [path] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.require_auth' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::String(path) = self.evaluate(path)? else {
+                return Err(runtime_error(
+                    expression_token(path).unwrap_or(closing_parenthesis),
+                    "app.require_auth requires an absolute route path string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if !path.starts_with('/') {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "app.require_auth requires an absolute route path string",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if !self
+                .application
+                .authenticated_routes
+                .iter()
+                .any(|route| route == &*path)
+            {
+                self.application.authenticated_routes.push(path.to_string());
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = path;
+            return Ok(Value::Unit);
+        }
+        if name == "app.require_refresh" {
+            let [path] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.require_refresh' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::String(path) = self.evaluate(path)? else {
+                return Err(runtime_error(
+                    expression_token(path).unwrap_or(closing_parenthesis),
+                    "app.require_refresh requires an absolute route path string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if !path.starts_with('/') {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "app.require_refresh requires an absolute route path string",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if !self
+                .application
+                .refresh_routes
+                .iter()
+                .any(|route| route == &*path)
+            {
+                self.application.refresh_routes.push(path.to_string());
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = path;
+            return Ok(Value::Unit);
+        }
+        if name == "app.logout" {
+            let [path] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.logout' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::String(path) = self.evaluate(path)? else {
+                return Err(runtime_error(
+                    expression_token(path).unwrap_or(closing_parenthesis),
+                    "app.logout requires an absolute route path string",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if !path.starts_with('/') {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "app.logout requires an absolute route path string",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if !self
+                    .application
+                    .logout_routes
+                    .iter()
+                    .any(|route| route == &*path)
+                {
+                    self.application.logout_routes.push(path.to_string());
+                }
+                if !self
+                    .application
+                    .refresh_routes
+                    .iter()
+                    .any(|route| route == &*path)
+                {
+                    self.application.refresh_routes.push(path.to_string());
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = path;
+            return Ok(Value::Unit);
+        }
+        if name == "auth.token" {
+            let [subject] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'auth.token' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::String(subject) = self.evaluate(subject)? else {
+                return Err(runtime_error(
+                    expression_token(subject).unwrap_or(closing_parenthesis),
+                    "auth.token requires a string subject",
+                )
+                .with_code("ORNI-E107"));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let Some(configuration) = self.application.auth.as_ref() else {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "configure app.auth before issuing tokens",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                return Ok(Value::String(auth::issue(configuration, &subject).into()));
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = subject;
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "auth is available on the native HTTP server only",
+                )
+                .with_code("ORNI-E107"));
+            }
+        }
+        if name == "auth.user" {
+            if !arguments.is_empty() {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'auth.user' expects 0 arguments",
+                )
+                .with_code("ORNI-E108"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(subject) = &self.authenticated_subject {
+                return Ok(Value::String(subject.clone().into()));
+            }
+            return Err(runtime_error(
+                closing_parenthesis,
+                "a valid Bearer token is required for auth.user",
+            )
+            .with_code("ORNI_HTTP_UNAUTHORIZED"));
+        }
+        if name == "auth.refresh_token" {
+            let [subject] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'auth.refresh_token' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::String(subject) = self.evaluate(subject)? else {
+                return Err(runtime_error(
+                    expression_token(subject).unwrap_or(closing_parenthesis),
+                    "auth.refresh_token requires a string subject",
+                )
+                .with_code("ORNI-E107"));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let Some(configuration) = self.application.auth.as_ref() else {
+                    return Err(runtime_error(
+                        closing_parenthesis,
+                        "configure app.auth before issuing tokens",
+                    )
+                    .with_code("ORNI-E107"));
+                };
+                return Ok(Value::String(
+                    auth::issue_refresh(configuration, &subject).into(),
+                ));
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = subject;
+        }
+        if name == "auth.refresh" {
+            if !arguments.is_empty() {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'auth.refresh' expects 0 arguments",
+                )
+                .with_code("ORNI-E108"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.authenticated_with_refresh_token
+                && let (Some(configuration), Some(subject)) = (
+                    self.application.auth.as_ref(),
+                    self.authenticated_subject.as_ref(),
+                )
+            {
+                return Ok(Value::String(auth::issue(configuration, subject).into()));
+            }
+            return Err(runtime_error(
+                closing_parenthesis,
+                "a valid refresh token is required for auth.refresh",
+            )
+            .with_code("ORNI_HTTP_UNAUTHORIZED"));
         }
         let values = arguments
             .iter()
@@ -589,4 +1227,25 @@ impl Interpreter {
         }
         Ok(())
     }
+}
+
+/// Extracts one positive native duration expressed internally in milliseconds.
+fn positive_duration(value: Value, token: &Token, setting: &str) -> Result<u64, OrniError> {
+    match value {
+        Value::Duration(milliseconds) if milliseconds > 0 => Ok(milliseconds),
+        _ => Err(
+            runtime_error(token, &format!("{setting} must be a positive Duration"))
+                .with_code("ORNI-E107"),
+        ),
+    }
+}
+
+/// Rejects wildcard and path-bearing values so browser access stays explicit.
+fn is_valid_cors_origin(origin: &str) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    matches!(scheme, "http" | "https")
+        && !authority.is_empty()
+        && !authority.contains(['/', '?', '#', '@', ' '])
 }

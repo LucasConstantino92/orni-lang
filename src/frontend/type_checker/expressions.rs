@@ -121,17 +121,79 @@ impl TypeChecker {
             );
         };
         let name = identifier_name(name_token);
-        if matches!(name, "api.status" | "api.body" | "api.contains") {
-            let valid_arity = if name == "api.contains" {
-                (3..=4).contains(&arguments.len())
-            } else {
-                (2..=3).contains(&arguments.len())
+        if name == "Size" {
+            if arguments.len() != 2 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "Size expects exactly one named unit argument",
+                )
+                .with_code("ORNI-E108"));
+            }
+            if arguments
+                .iter()
+                .any(|argument| !matches!(self.expression_type(argument), Ok(TypeName::Integer(_))))
+            {
+                return Err(semantic_error(
+                    name_token,
+                    "Size requires a non-negative integer amount",
+                )
+                .with_code("ORNI-E107"));
+            }
+            return Ok(TypeName::Size);
+        }
+        if name == "Duration" {
+            if arguments.len() != 2 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "Duration expects exactly one named unit argument",
+                )
+                .with_code("ORNI-E108"));
+            }
+            if arguments
+                .iter()
+                .any(|argument| !matches!(self.expression_type(argument), Ok(TypeName::Integer(_))))
+            {
+                return Err(semantic_error(
+                    name_token,
+                    "Duration requires a non-negative integer amount",
+                )
+                .with_code("ORNI-E107"));
+            }
+            return Ok(TypeName::Duration);
+        }
+        if name == "auth.cookie" {
+            if arguments.len() != 2 {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    "function 'auth.cookie' expects 2 argument(s)",
+                )
+                .with_code("ORNI-E108"));
+            }
+            if !matches!(self.expression_type(&arguments[0])?, TypeName::Response)
+                || !matches!(self.expression_type(&arguments[1])?, TypeName::String(_))
+            {
+                return Err(semantic_error(
+                    name_token,
+                    "auth.cookie requires a response and refresh token string",
+                )
+                .with_code("ORNI-E107"));
+            }
+            return Ok(TypeName::Response);
+        }
+        if matches!(
+            name,
+            "api.status" | "api.body" | "api.contains" | "api.header" | "api.status_with"
+        ) {
+            let valid_arity = match name {
+                "api.contains" | "api.header" => (3..=4).contains(&arguments.len()),
+                "api.status_with" => (4..=5).contains(&arguments.len()),
+                _ => (2..=3).contains(&arguments.len()),
             };
             if !valid_arity {
-                let expected = if name == "api.contains" {
-                    "3 or 4"
-                } else {
-                    "2 or 3"
+                let expected = match name {
+                    "api.contains" | "api.header" => "3 or 4",
+                    "api.status_with" => "4 or 5",
+                    _ => "2 or 3",
                 };
                 return Err(semantic_error(
                     closing_parenthesis,
@@ -152,19 +214,40 @@ impl TypeChecker {
                 }
             }
             return Ok(match name {
-                "api.status" => TypeName::Integer(crate::syntax::IntegerType::Int64),
-                "api.body" => TypeName::String(None),
+                "api.status" | "api.status_with" => {
+                    TypeName::Integer(crate::syntax::IntegerType::Int64)
+                }
+                "api.body" | "api.header" => TypeName::String(None),
                 _ => TypeName::Bool,
             });
         }
-        if matches!(name, "app.name" | "app.port" | "app.protect") {
+        if matches!(
+            name,
+            "app.name"
+                | "app.port"
+                | "app.protect"
+                | "app.cors"
+                | "app.auth"
+                | "app.auth_env"
+                | "app.require_auth"
+                | "app.require_refresh"
+                | "app.logout"
+                | "app.body_limit"
+                | "app.cache_limit"
+        ) {
             let valid_arity = if name == "app.protect" {
                 matches!(arguments.len(), 1 | 3)
+            } else if matches!(name, "app.auth" | "app.auth_env") {
+                matches!(arguments.len(), 2..=4)
             } else {
                 arguments.len() == 1
             };
             if !valid_arity {
-                let expected = if name == "app.protect" { "1 or 3" } else { "1" };
+                let expected = match name {
+                    "app.protect" => "1 or 3",
+                    "app.auth" | "app.auth_env" => "2, 3, or 4",
+                    _ => "1",
+                };
                 return Err(semantic_error(
                     closing_parenthesis,
                     &format!(
@@ -175,10 +258,24 @@ impl TypeChecker {
                 .with_code("ORNI-E108"));
             }
             let actual = self.expression_type(&arguments[0])?;
-            if name == "app.name" {
+            if matches!(
+                name,
+                "app.name" | "app.cors" | "app.require_auth" | "app.require_refresh" | "app.logout"
+            ) {
                 if !matches!(actual, TypeName::String(_)) {
-                    return Err(semantic_error(name_token, "app.name requires a string")
-                        .with_code("ORNI-E107"));
+                    return Err(semantic_error(
+                        name_token,
+                        match name {
+                            "app.cors" => "app.cors requires an HTTP or HTTPS origin string",
+                            "app.require_auth" => "app.require_auth requires a route path string",
+                            "app.require_refresh" => {
+                                "app.require_refresh requires a route path string"
+                            }
+                            "app.logout" => "app.logout requires a route path string",
+                            _ => "app.name requires a string",
+                        },
+                    )
+                    .with_code("ORNI-E107"));
                 }
             } else if name == "app.port" && !matches!(actual, TypeName::Integer(_)) {
                 return Err(semantic_error(name_token, "app.port requires an integer")
@@ -192,17 +289,76 @@ impl TypeChecker {
                     )
                     .with_code("ORNI-E107"));
                 }
-                for argument in &arguments[1..] {
-                    if !matches!(self.expression_type(argument)?, TypeName::Integer(_)) {
-                        return Err(semantic_error(
-                            name_token,
-                            "app.protect limits must be integers",
-                        )
-                        .with_code("ORNI-E107"));
-                    }
+                if arguments.len() == 3
+                    && (!matches!(self.expression_type(&arguments[1])?, TypeName::Integer(_))
+                        || !matches!(self.expression_type(&arguments[2])?, TypeName::Duration))
+                {
+                    return Err(semantic_error(
+                        name_token,
+                        "app.protect requires integer attempts and a Duration lock_time",
+                    )
+                    .with_code("ORNI-E107"));
                 }
             }
+            if matches!(name, "app.auth" | "app.auth_env")
+                && (!matches!(actual, TypeName::String(_))
+                    || !matches!(self.expression_type(&arguments[1]), Ok(TypeName::Duration))
+                    || arguments.get(2).is_some_and(|argument| {
+                        !matches!(self.expression_type(argument), Ok(TypeName::Duration))
+                    })
+                    || arguments.get(3).is_some_and(|argument| {
+                        !matches!(self.expression_type(argument), Ok(TypeName::Integer(_)))
+                    }))
+            {
+                return Err(semantic_error(
+                    name_token,
+                    "authentication configuration requires a string secret or environment name, Duration values, and an optional integer session limit",
+                )
+                .with_code("ORNI-E107"));
+            }
+            if matches!(name, "app.body_limit" | "app.cache_limit")
+                && !matches!(actual, TypeName::Size)
+            {
+                return Err(
+                    semantic_error(name_token, "resource limits require a Size value")
+                        .with_code("ORNI-E107"),
+                );
+            }
             return Ok(TypeName::Unit);
+        }
+        if matches!(
+            name,
+            "auth.token" | "auth.refresh_token" | "auth.user" | "auth.refresh"
+        ) {
+            let valid_arity = if matches!(name, "auth.token" | "auth.refresh_token") {
+                arguments.len() == 1
+            } else {
+                arguments.is_empty()
+            };
+            if !valid_arity {
+                return Err(semantic_error(
+                    closing_parenthesis,
+                    &format!(
+                        "function '{name}' expects {} argument(s), but received {}",
+                        if matches!(name, "auth.token" | "auth.refresh_token") {
+                            1
+                        } else {
+                            0
+                        },
+                        arguments.len()
+                    ),
+                )
+                .with_code("ORNI-E108"));
+            }
+            if matches!(name, "auth.token" | "auth.refresh_token")
+                && !matches!(self.expression_type(&arguments[0])?, TypeName::String(_))
+            {
+                return Err(
+                    semantic_error(name_token, "token helpers require a string subject")
+                        .with_code("ORNI-E107"),
+                );
+            }
+            return Ok(TypeName::String(None));
         }
         if matches!(
             name,

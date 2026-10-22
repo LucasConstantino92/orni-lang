@@ -196,8 +196,42 @@ impl Parser {
                 .tokens
                 .get(self.current + 1)
                 .is_some_and(|token| matches!(token.kind, TokenKind::Colon));
+            let named_auth_arguments = matches!(
+                &expression,
+                Expression::Variable(token)
+                    if matches!(&token.kind, TokenKind::Identifier(name) if name == "app.auth" || name == "app.auth_env")
+            ) && matches!(self.peek().kind, TokenKind::Identifier(_))
+                && self
+                    .tokens
+                    .get(self.current + 1)
+                    .is_some_and(|token| matches!(token.kind, TokenKind::Colon));
+            let named_size_argument = matches!(
+                &expression,
+                Expression::Variable(token)
+                    if matches!(&token.kind, TokenKind::Identifier(name) if name == "Size")
+            ) && matches!(self.peek().kind, TokenKind::Identifier(_))
+                && self
+                    .tokens
+                    .get(self.current + 1)
+                    .is_some_and(|token| matches!(token.kind, TokenKind::Colon));
+            let named_duration_argument = matches!(
+                &expression,
+                Expression::Variable(token)
+                    if matches!(&token.kind, TokenKind::Identifier(name) if name == "Duration")
+            ) && matches!(self.peek().kind, TokenKind::Identifier(_))
+                && self
+                    .tokens
+                    .get(self.current + 1)
+                    .is_some_and(|token| matches!(token.kind, TokenKind::Colon));
             let arguments = if named_protect_arguments {
                 self.protect_arguments()?
+            } else if named_auth_arguments {
+                let environment = matches!(&expression, Expression::Variable(token) if matches!(&token.kind, TokenKind::Identifier(name) if name == "app.auth_env"));
+                self.auth_arguments(environment)?
+            } else if named_size_argument {
+                self.size_argument()?
+            } else if named_duration_argument {
+                self.duration_argument()?
             } else {
                 let mut arguments = Vec::new();
                 if !matches!(self.peek().kind, TokenKind::RightParen) {
@@ -224,11 +258,141 @@ impl Parser {
         Ok(expression)
     }
 
+    /// Parses one explicit storage unit and preserves its byte multiplier for `Size`.
+    fn size_argument(&mut self) -> Result<Vec<Expression>, OrniError> {
+        let unit = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a Size unit such as bytes or megabytes",
+        )?;
+        let TokenKind::Identifier(name) = &unit.kind else {
+            unreachable!("the size unit was validated as an identifier")
+        };
+        let multiplier = match name.as_str() {
+            "bytes" => 1,
+            "kilobytes" => 1024,
+            "megabytes" => 1024 * 1024,
+            "gigabytes" => 1024 * 1024 * 1024,
+            _ => {
+                return Err(syntax_error(
+                    &unit,
+                    "Size expects bytes, kilobytes, megabytes, or gigabytes",
+                )
+                .with_code("ORNI-E107"));
+            }
+        };
+        self.consume(
+            |kind| matches!(kind, TokenKind::Colon),
+            "expected ':' after the Size unit",
+        )?;
+        let value = self.expression()?;
+        let multiplier = Expression::Literal(Value::Integer {
+            value: multiplier,
+            integer_type: IntegerType::smallest_signed(multiplier),
+        });
+        Ok(vec![multiplier, value])
+    }
+
+    /// Parses one explicit time unit and preserves its millisecond multiplier for `Duration`.
+    fn duration_argument(&mut self) -> Result<Vec<Expression>, OrniError> {
+        let unit = self.consume(
+            |kind| matches!(kind, TokenKind::Identifier(_)),
+            "expected a Duration unit such as seconds or minutes",
+        )?;
+        let TokenKind::Identifier(name) = &unit.kind else {
+            unreachable!("the duration unit was validated as an identifier")
+        };
+        let multiplier = match name.as_str() {
+            "milliseconds" => 1,
+            "seconds" => 1_000,
+            "minutes" => 60_000,
+            "hours" => 3_600_000,
+            "days" => 86_400_000,
+            _ => {
+                return Err(syntax_error(
+                    &unit,
+                    "Duration expects milliseconds, seconds, minutes, hours, or days",
+                )
+                .with_code("ORNI-E107"));
+            }
+        };
+        self.consume(
+            |kind| matches!(kind, TokenKind::Colon),
+            "expected ':' after the Duration unit",
+        )?;
+        let value = self.expression()?;
+        let multiplier = Expression::Literal(Value::Integer {
+            value: multiplier,
+            integer_type: IntegerType::smallest_signed(multiplier),
+        });
+        Ok(vec![multiplier, value])
+    }
+
+    /// Parses named authentication settings in a stable declaration order.
+    fn auth_arguments(&mut self, environment: bool) -> Result<Vec<Expression>, OrniError> {
+        let mut secret = None;
+        let mut access = None;
+        let mut refresh = None;
+        let mut sessions = None;
+        loop {
+            let label = self.consume(
+                |kind| matches!(kind, TokenKind::Identifier(_)),
+                "expected a named authentication argument",
+            )?;
+            let TokenKind::Identifier(name) = &label.kind else {
+                unreachable!()
+            };
+            self.consume(
+                |kind| matches!(kind, TokenKind::Colon),
+                "expected ':' after the authentication argument name",
+            )?;
+            let value = self.expression()?;
+            let target = match name.as_str() {
+                "secret" if !environment => &mut secret,
+                "variable" if environment => &mut secret,
+                "access_time" => &mut access,
+                "refresh_time" => &mut refresh,
+                "max_sessions" => &mut sessions,
+                _ => {
+                    return Err(syntax_error(
+                        &label,
+                        "expected secret or variable, access_time, refresh_time, or max_sessions",
+                    ));
+                }
+            };
+            if target.replace(value).is_some() {
+                return Err(
+                    syntax_error(&label, "authentication argument is already declared")
+                        .with_code("ORNI-E116"),
+                );
+            }
+            if !self.matches(|kind| matches!(kind, TokenKind::Comma)) {
+                break;
+            }
+        }
+        let Some(secret) = secret else {
+            return Err(self.error_at_current("authentication requires secret or variable"));
+        };
+        let Some(access) = access else {
+            return Err(self.error_at_current("authentication requires access_time"));
+        };
+        if sessions.is_some() && refresh.is_none() {
+            return Err(self.error_at_current("max_sessions requires refresh_time"));
+        }
+        let mut arguments = vec![secret, access];
+        if let Some(refresh) = refresh {
+            arguments.push(refresh);
+        }
+        if let Some(sessions) = sessions {
+            arguments.push(sessions);
+        }
+        Ok(arguments)
+    }
+
     /// Parses readable named arguments for the built-in failed-attempt guard.
     fn protect_arguments(&mut self) -> Result<Vec<Expression>, OrniError> {
         let mut route = None;
         let mut attempts = None;
-        let mut seconds = None;
+        let mut lock_time = None;
         loop {
             let label = self.consume(
                 |kind| matches!(kind, TokenKind::Identifier(_) | TokenKind::Route),
@@ -247,8 +411,13 @@ impl Parser {
             let target = match name {
                 "route" => &mut route,
                 "attempts" => &mut attempts,
-                "seconds" => &mut seconds,
-                _ => return Err(syntax_error(&label, "expected route, attempts, or seconds")),
+                "lock_time" => &mut lock_time,
+                _ => {
+                    return Err(syntax_error(
+                        &label,
+                        "expected route, attempts, or lock_time",
+                    ));
+                }
             };
             if target.replace(value).is_some() {
                 return Err(
@@ -260,16 +429,16 @@ impl Parser {
                 break;
             }
         }
-        let missing = route.is_none() || attempts.is_none() || seconds.is_none();
+        let missing = route.is_none() || attempts.is_none() || lock_time.is_none();
         if missing {
             return Err(
-                self.error_at_current("named app.protect requires route, attempts, and seconds")
+                self.error_at_current("named app.protect requires route, attempts, and lock_time")
             );
         }
         Ok(vec![
             route.expect("checked above"),
             attempts.expect("checked above"),
-            seconds.expect("checked above"),
+            lock_time.expect("checked above"),
         ])
     }
 

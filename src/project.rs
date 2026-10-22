@@ -177,6 +177,8 @@ impl Project {
                     "request_window_seconds" => http.request_window_seconds = number as u64,
                     "cache_ttl_seconds" => http.cache_ttl_seconds = number as u64,
                     "max_cache_entries" => http.max_cache_entries = number,
+                    "max_request_bytes" => http.max_request_bytes = number,
+                    "max_cache_bytes" => http.max_cache_bytes = number,
                     _ => return Err(error(format!("unknown http setting '{key}'"))),
                 }
             }

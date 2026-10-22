@@ -1,0 +1,13 @@
+/// Configures an isolated endpoint for browser CORS verification.
+func main() -> unit {
+    app.name("Orni CORS smoke test");
+    app.port(3210);
+    app.cors("http://localhost:5173");
+}
+
+/// Returns a small browser-readable response.
+func health() -> string {
+    return "OK";
+}
+
+route get "/health" => health;

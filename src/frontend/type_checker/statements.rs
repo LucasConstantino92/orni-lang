@@ -36,6 +36,8 @@ impl TypeChecker {
                         | TypeName::Bool
                         | TypeName::Char
                         | TypeName::Uuid
+                        | TypeName::Size
+                        | TypeName::Duration
                 ) {
                     errors.push(
                         semantic_error(
