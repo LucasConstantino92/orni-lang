@@ -13,6 +13,8 @@ func main() -> unit {
     app.port(3000);
     app.body_limit(Size(megabytes: 2));
     app.cache_limit(Size(megabytes: 16));
+    app.timeout(Duration(seconds: 30));
+    app.log_requests(true);
 }
 ```
 
@@ -71,11 +73,19 @@ max_requests_per_ip = 120
 request_window_seconds = 60
 max_request_bytes = 1048576
 max_cache_bytes = 16777216
+request_timeout_milliseconds = 30000
 ```
 
 Orni validates request framing, request body size, JSON media types, and common
 HTTP preconditions before executing a handler. Oversized bodies receive `413`;
 oversized headers receive `431`.
+
+`app.timeout(Duration(...))` applies a per-request deadline from the application
+entry point. A request that exceeds it receives a safe `408 Request Timeout` and
+its connection closes. Every HTTP response also receives an `X-Request-Id`
+header. Enable `app.log_requests(true)` during development to print that id,
+method, path, status, and elapsed time as one terminal line. Do not enable it
+for local benchmarks unless request logging is part of the measurement.
 
 Browser access is closed by default. Allow each frontend origin explicitly:
 

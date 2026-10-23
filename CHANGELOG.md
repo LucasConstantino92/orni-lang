@@ -6,6 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-23
+
+### Added
+
+- `app.timeout(Duration(...))` for a named application-level request deadline,
+  returning a safe `408 Request Timeout` when a request outlives its boundary.
+- Automatic `X-Request-Id` response headers for HTTP responses, allowing a
+  client error to be correlated with one server log entry.
+- `app.log_requests(true)` for concise development logs containing the request
+  id, method, path, status, and elapsed duration.
+- Graceful native-server shutdown handling: new connections stop first and
+  active bounded requests are allowed to finish before the process exits.
+- `request_timeout_milliseconds` as a project-level HTTP default and an
+  `operations.orni` runnable example for observing IDs, deadlines, and logs.
+
 ## [0.9.3] - 2026-10-22
 
 ### Added
@@ -139,3 +154,4 @@ The project follows [Semantic Versioning](https://semver.org/).
 [0.9.0]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.0
 [0.9.2]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.2
 [0.9.3]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.3
+[0.9.4]: https://github.com/LucasConstantino92/orni-lang/releases/tag/v0.9.4

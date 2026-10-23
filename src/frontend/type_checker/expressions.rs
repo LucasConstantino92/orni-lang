@@ -225,6 +225,8 @@ impl TypeChecker {
             name,
             "app.name"
                 | "app.port"
+                | "app.timeout"
+                | "app.log_requests"
                 | "app.protect"
                 | "app.cors"
                 | "app.auth"
@@ -280,6 +282,18 @@ impl TypeChecker {
             } else if name == "app.port" && !matches!(actual, TypeName::Integer(_)) {
                 return Err(semantic_error(name_token, "app.port requires an integer")
                     .with_code("ORNI-E107"));
+            }
+            if name == "app.timeout" && !matches!(actual, TypeName::Duration) {
+                return Err(
+                    semantic_error(name_token, "app.timeout requires a Duration value")
+                        .with_code("ORNI-E107"),
+                );
+            }
+            if name == "app.log_requests" && !matches!(actual, TypeName::Bool) {
+                return Err(
+                    semantic_error(name_token, "app.log_requests requires a bool value")
+                        .with_code("ORNI-E107"),
+                );
             }
             if name == "app.protect" {
                 if !matches!(actual, TypeName::String(_)) {

@@ -9,7 +9,7 @@ use std::{
     net::{IpAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -52,6 +52,9 @@ pub(crate) fn serve(
     if let Some(limit) = application.cache_limit_bytes {
         http_limits.max_cache_bytes = limit;
     }
+    if let Some(timeout) = application.request_timeout_milliseconds {
+        http_limits.request_timeout_milliseconds = timeout;
+    }
     if (!application.authenticated_routes.is_empty() || !application.refresh_routes.is_empty())
         && application.auth.is_none()
     {
@@ -73,6 +76,14 @@ pub(crate) fn serve(
         )
         .with_code("ORNI-E152")
     })?;
+    listener.set_nonblocking(true).map_err(|error| {
+        OrniError::runtime(
+            1,
+            1,
+            format!("could not configure HTTP server on {address}: {error}"),
+        )
+        .with_code("ORNI-E152")
+    })?;
     let label = application.name.as_deref().unwrap_or("Orni");
     println!("{label} HTTP server listening on http://{address}");
 
@@ -83,9 +94,31 @@ pub(crate) fn serve(
     let route_guard = Arc::new(RouteGuard::new(&application.protected_routes));
     let cors = Arc::new(CorsPolicy::new(&application));
     let authentication = Arc::new(AuthenticationPolicy::new(&application));
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut stream) => {
+    let request_logging = application.request_logging;
+    let shutting_down = Arc::new(AtomicBool::new(false));
+    let shutdown_signal = Arc::clone(&shutting_down);
+    ctrlc::set_handler(move || {
+        shutdown_signal.store(true, Ordering::Release);
+    })
+    .map_err(|error| {
+        OrniError::runtime(
+            1,
+            1,
+            format!("could not configure server shutdown: {error}"),
+        )
+        .with_code("ORNI-E152")
+    })?;
+    loop {
+        if shutting_down.load(Ordering::Acquire) {
+            println!("Orni HTTP server is shutting down gracefully.");
+            while connections.active.load(Ordering::Acquire) > 0 {
+                thread::sleep(Duration::from_millis(10));
+            }
+            println!("Orni HTTP server stopped.");
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
                 let peer = stream.peer_addr().ok().map(|address| address.ip());
                 let permit = match connections.acquire(peer) {
                     Ok(permit) => permit,
@@ -135,13 +168,16 @@ pub(crate) fn serve(
                         route_guard,
                         cors,
                         authentication,
+                        request_logging,
                     );
                 });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
             }
             Err(error) => eprintln!("Orni HTTP connection failed: {error}"),
         }
     }
-    Ok(())
 }
 
 /// Authentication policy captured from the application's startup configuration.
@@ -873,9 +909,12 @@ fn handle_connection(
     route_guard: Arc<RouteGuard>,
     cors: Arc<CorsPolicy>,
     authentication: Arc<AuthenticationPolicy>,
+    request_logging: bool,
 ) {
     let connection_timeout = Duration::from_secs(http_limits.connection_timeout_seconds);
-    let _ = stream.set_read_timeout(Some(connection_timeout));
+    let request_timeout = Duration::from_millis(http_limits.request_timeout_milliseconds);
+    let read_timeout = connection_timeout.min(request_timeout);
+    let _ = stream.set_read_timeout(Some(read_timeout));
     let mut reader = BufReader::new(stream);
     for request_number in 0..http_limits.max_requests_per_connection {
         let started = Instant::now();
@@ -883,11 +922,12 @@ fn handle_connection(
             Ok(Some(request)) => request,
             Ok(None) => return,
             Err(message) => {
-                write_response(
-                    reader.get_mut(),
-                    HttpResponse::error(message.status, message.code, message.message),
-                    true,
-                );
+                let response = if started.elapsed() >= request_timeout {
+                    HttpResponse::error(408, "ORNI_HTTP_REQUEST_TIMEOUT", "Request timed out")
+                } else {
+                    HttpResponse::error(message.status, message.code, message.message)
+                };
+                write_response(reader.get_mut(), response, true);
                 return;
             }
         };
@@ -1101,6 +1141,9 @@ fn handle_connection(
         if request.method == "GET" {
             response = response.not_modified_if_matches(request.if_none_match.as_deref());
         }
+        if started.elapsed() >= request_timeout {
+            response = HttpResponse::error(408, "ORNI_HTTP_REQUEST_TIMEOUT", "Request timed out");
+        }
         response = cors.decorate(response, request.origin.as_deref());
         if requires_refresh && response.status < 400 {
             if authentication.is_logout(&request.path, routes) {
@@ -1137,16 +1180,15 @@ fn handle_connection(
         }
         route_guard.record(peer, &request.path, response.status);
         let close_connection = request.close_connection
-            || started.elapsed() >= connection_timeout
+            || started.elapsed() >= request_timeout
             || request_number + 1 == http_limits.max_requests_per_connection;
         let status = response.status;
-        write_response(reader.get_mut(), response, close_connection);
-        if request_logging_enabled() {
+        let request_id = write_response(reader.get_mut(), response, close_connection);
+        if request_logging_enabled(request_logging) {
             println!(
-                "{} {} -> {} ({}ms)",
+                "orni request_id={request_id} method={} path={} status={status} duration_ms={}",
                 request.method,
                 request.path,
-                status,
                 started.elapsed().as_millis()
             );
         }
@@ -1213,13 +1255,20 @@ fn accepts_json(accept: Option<&str>) -> bool {
 }
 
 /// Enables development request logs only when explicitly requested.
-fn request_logging_enabled() -> bool {
-    std::env::var("ORNI_HTTP_LOG")
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+fn request_logging_enabled(configured: bool) -> bool {
+    configured
+        || std::env::var("ORNI_HTTP_LOG")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
 }
 
 /// Serializes one response and explicitly signals the connection lifetime.
-fn write_response(stream: &mut TcpStream, response: HttpResponse, close_connection: bool) {
+fn write_response(
+    stream: &mut TcpStream,
+    response: HttpResponse,
+    close_connection: bool,
+) -> String {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let response = response.with_header("X-Request-Id", request_id.clone());
     let reason = match response.status {
         200 => "OK",
         201 => "Created",
@@ -1260,6 +1309,7 @@ fn write_response(stream: &mut TcpStream, response: HttpResponse, close_connecti
     if let Err(error) = stream.write_all(wire_response.as_bytes()) {
         eprintln!("Orni HTTP response write failed: {error}");
     }
+    request_id
 }
 
 #[cfg(test)]

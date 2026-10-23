@@ -144,6 +144,8 @@ const appHelpers = {
   logout: ["app.logout(route: string)", "Declares a refresh-token route that revokes all active refresh sessions for its authenticated subject."],
   body_limit: ["app.body_limit(limit: Size)", "Sets the maximum accepted HTTP request body size for this application."],
   cache_limit: ["app.cache_limit(limit: Size)", "Sets the maximum combined memory retained by the successful GET response cache."],
+  timeout: ["app.timeout(timeout: Duration)", "Sets the maximum time one HTTP request may occupy a server connection before Orni returns 408 Request Timeout."],
+  log_requests: ["app.log_requests(enabled: bool)", "Enables one structured development log line per completed HTTP request."],
   require_auth: [
     "app.require_auth(route: string)",
     "Requires a valid Bearer token for every HTTP method on one declared route. The route can read its validated subject with auth.user().",
@@ -198,6 +200,8 @@ const appHelperGuidance = {
   logout: ["Session revocation", "The route requires a refresh token and invalidates every active refresh session for that subject."],
   body_limit: ["Resource boundary", "Use a Size value such as Size(megabytes: 2). Requests larger than this limit are rejected before JSON parsing."],
   cache_limit: ["Resource boundary", "Use a Size value such as Size(megabytes: 16). Orni evicts the oldest cached GET responses before retained memory exceeds the limit."],
+  timeout: ["Request boundary", "Use a Duration such as Duration(seconds: 30). Requests that exceed it receive a safe 408 response and the connection closes."],
+  log_requests: ["Development observability", "When enabled, Orni prints the request id, method, path, status, and duration. Keep it off for benchmarks or high-volume production logs."],
   require_auth: [
     "Protection",
     "Unauthenticated requests receive a neutral 401 response and a WWW-Authenticate: Bearer header before the route handler runs.",
@@ -285,6 +289,14 @@ const backendSymbols = {
   "app.cache_limit": {
     path: ["src", "runtime", "http", "server.rs"],
     needle: "struct ResponseCache",
+  },
+  "app.timeout": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "ORNI_HTTP_REQUEST_TIMEOUT",
+  },
+  "app.log_requests": {
+    path: ["src", "runtime", "http", "server.rs"],
+    needle: "request_logging_enabled",
   },
   "app.require_auth": {
     path: ["src", "runtime", "http", "server.rs"],
@@ -527,7 +539,7 @@ const keywordDocumentation = {
   delete: "Declares an HTTP DELETE route.",
   assert: "Stops execution when a boolean condition is false; use it for Orni tests.",
   test: "Groups assertions into a named test scenario. A scenario passes only when every statement in its body succeeds.",
-  app: "Configures application startup from main with app.name(...), app.port(...), app.cors(...), app.protect(...), app.auth(...), and app.require_auth(...).",
+  app: "Configures application startup from main with app.name(...), app.port(...), app.timeout(...), app.cors(...), app.protect(...), app.auth(...), and app.require_auth(...).",
 };
 
 const primitiveTypes = {

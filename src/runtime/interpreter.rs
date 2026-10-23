@@ -54,6 +54,10 @@ pub(crate) struct ApplicationConfig {
     pub body_limit_bytes: Option<usize>,
     /// Maximum retained cache bytes set in the application entry point.
     pub cache_limit_bytes: Option<usize>,
+    /// Maximum time one HTTP request may occupy a server connection.
+    pub request_timeout_milliseconds: Option<u64>,
+    /// Whether the development server prints one structured line per request.
+    pub request_logging: bool,
 }
 
 /// Application-owned token settings. The secret never leaves the server process.
@@ -96,6 +100,8 @@ impl Default for ApplicationConfig {
             logout_routes: Vec::new(),
             body_limit_bytes: None,
             cache_limit_bytes: None,
+            request_timeout_milliseconds: None,
+            request_logging: false,
         }
     }
 }

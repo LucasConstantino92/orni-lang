@@ -54,6 +54,18 @@ Run it with the native Rust target from the repository root:
 cargo run -- serve examples/experimental/http_server
 ```
 
+## Operations preview
+
+`operations.orni` configures a request deadline and structured development
+logs. Run it with:
+
+```powershell
+cargo run -- serve examples/experimental/operations.orni
+```
+
+Open `http://127.0.0.1:3002/health`. The response includes `X-Request-Id`, and
+the terminal prints the same ID with the method, path, status, and duration.
+
 Then open `http://127.0.0.1:3000/hello/Orni`. This preview handles one
 connection at a time, binds only to loopback, and supports GET, POST, PUT, and
 DELETE routes. Literal routes take precedence over parameterized routes. The

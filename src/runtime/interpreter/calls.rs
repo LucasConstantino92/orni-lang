@@ -587,6 +587,59 @@ impl Interpreter {
             let _ = port;
             return Ok(Value::Unit);
         }
+        if name == "app.timeout" {
+            let [value] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.timeout' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Duration(milliseconds) = self.evaluate(value)? else {
+                return Err(runtime_error(
+                    expression_token(value).unwrap_or(closing_parenthesis),
+                    "app.timeout requires a Duration value",
+                )
+                .with_code("ORNI-E107"));
+            };
+            if milliseconds == 0 {
+                return Err(runtime_error(
+                    expression_token(value).unwrap_or(closing_parenthesis),
+                    "app.timeout requires a positive Duration",
+                )
+                .with_code("ORNI-E107"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.application.request_timeout_milliseconds = Some(milliseconds);
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = milliseconds;
+            return Ok(Value::Unit);
+        }
+        if name == "app.log_requests" {
+            let [value] = arguments else {
+                return Err(runtime_error(
+                    closing_parenthesis,
+                    "function 'app.log_requests' expects 1 argument",
+                )
+                .with_code("ORNI-E108"));
+            };
+            let Value::Bool(enabled) = self.evaluate(value)? else {
+                return Err(runtime_error(
+                    expression_token(value).unwrap_or(closing_parenthesis),
+                    "app.log_requests requires a bool value",
+                )
+                .with_code("ORNI-E107"));
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.application.request_logging = enabled;
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = enabled;
+            return Ok(Value::Unit);
+        }
         if matches!(name, "app.body_limit" | "app.cache_limit") {
             let [value] = arguments else {
                 return Err(runtime_error(

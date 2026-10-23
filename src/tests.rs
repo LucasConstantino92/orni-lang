@@ -44,6 +44,8 @@ fn configures_native_durations_and_resource_sizes_from_main() {
             func main() -> unit {
                 app.body_limit(Size(megabytes: 2));
                 app.cache_limit(Size(megabytes: 8));
+                app.timeout(Duration(seconds: 20));
+                app.log_requests(true);
                 app.protect(
                     route: "/auth/login",
                     attempts: 5,
@@ -65,6 +67,8 @@ fn configures_native_durations_and_resource_sizes_from_main() {
 
     assert_eq!(application.body_limit_bytes, Some(2 * 1_048_576));
     assert_eq!(application.cache_limit_bytes, Some(8 * 1_048_576));
+    assert_eq!(application.request_timeout_milliseconds, Some(20_000));
+    assert!(application.request_logging);
     assert_eq!(
         application.protected_routes[0].lockout_milliseconds,
         900_000

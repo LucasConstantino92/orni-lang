@@ -1,0 +1,14 @@
+/// Demonstrates operational HTTP boundaries for a local Orni server.
+func main() -> unit {
+    app.name("Orni Operations");
+    app.port(3002);
+    app.timeout(Duration(seconds: 30));
+    app.log_requests(true);
+}
+
+/// Confirms that request IDs and structured logs are active.
+func health() -> string {
+    return "OK";
+}
+
+route get "/health" => health;

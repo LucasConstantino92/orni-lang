@@ -92,8 +92,9 @@ complete local login → profile → refresh → logout flow.
 ## Current status
 
 Orni currently provides a typed local HTTP workflow, in-memory CRUD stores,
-bounded request and cache memory, JSON validation, route protection, CORS,
-ETags, token authentication, an Orni test runner, and editor diagnostics.
+bounded request and cache memory, request deadlines and IDs, JSON validation,
+route protection, CORS, ETags, token authentication, an Orni test runner, and
+editor diagnostics.
 
 Stores, caches, rate limits, and refresh sessions are currently in process
 memory. They are designed for local development and early prototypes; durable

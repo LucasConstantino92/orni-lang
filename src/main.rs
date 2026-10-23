@@ -379,6 +379,7 @@ const CONFIG_TEMPLATE: &str = r#"/// Configures the application before the HTTP 
 func configure() -> unit {
     app.name("Orni API");
     app.port(3000);
+    app.timeout(Duration(seconds: 30));
     print "Starting Orni API";
 }
 "#;

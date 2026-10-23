@@ -170,6 +170,9 @@ impl Project {
                     .ok_or_else(|| error(format!("http.{key} must be a positive integer")))?;
                 match key {
                     "connection_timeout_seconds" => http.connection_timeout_seconds = number as u64,
+                    "request_timeout_milliseconds" => {
+                        http.request_timeout_milliseconds = number as u64
+                    }
                     "max_connections" => http.max_connections = number,
                     "max_connections_per_ip" => http.max_connections_per_ip = number,
                     "max_requests_per_connection" => http.max_requests_per_connection = number,

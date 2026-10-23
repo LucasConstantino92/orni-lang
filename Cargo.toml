@@ -1,6 +1,6 @@
 [package]
 name = "orni"
-version = "0.9.3"
+version = "0.9.4"
 edition = "2024"
 description = "A memory-conscious framework and language for predictable server applications."
 license = "MIT"
@@ -14,6 +14,9 @@ serde_json = { version = "1.0", default-features = false, features = ["std"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 hmac = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ctrlc = "3.4"
 
 [lints.rust]
 unsafe_code = "forbid"

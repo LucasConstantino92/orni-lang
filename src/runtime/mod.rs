@@ -35,6 +35,8 @@ pub use limits::ExecutionLimits;
 pub struct HttpLimits {
     /// Idle read timeout applied to each accepted TCP connection, in seconds.
     pub connection_timeout_seconds: u64,
+    /// Maximum time one HTTP request may occupy a connection, in milliseconds.
+    pub request_timeout_milliseconds: u64,
     /// Maximum number of simultaneous TCP connections across the server.
     pub max_connections: usize,
     /// Maximum simultaneous TCP connections accepted from one IP address.
@@ -60,6 +62,7 @@ impl Default for HttpLimits {
     fn default() -> Self {
         Self {
             connection_timeout_seconds: 5,
+            request_timeout_milliseconds: 30_000,
             max_connections: 256,
             max_connections_per_ip: 32,
             max_requests_per_connection: 1_000,
